@@ -1,0 +1,19 @@
+venv/
+__pycache__/
+*.pyc
+
+# data — regenerable from raw sources, not source-controlled
+data/raw/
+data/rag_corpus/
+data/processed/
+
+# indices/embeddings — regenerable, often large
+*.faiss
+*.index
+embeddings/
+
+# logs from eval runs
+logs/*.jsonl
+
+# local env
+.env
