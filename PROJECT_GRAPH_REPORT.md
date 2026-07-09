@@ -5,7 +5,7 @@
 
 **Prior project (asset source only):** `github.com/JoshuvaPrabhakarP/hybrid-doc-extractor` (its Phases 1-8, complete)
 **This project:** repo created and live — `github.com/JoshuvaPrabhakarP/Document-Intelligence-RAG`
-**Current stage:** This project's Phase 1, Step 0 — Environment & Data Prep (install list complete, data reconstruction pending)
+**Current stage:** This project's Phase 1, Step 0 — COMPLETE. Ready to begin Step 1.
 
 ---
 
@@ -23,8 +23,8 @@
 
 | Step | Name | Status |
 |---|---|---|
-| 0 | Environment & data prep | 🔶 In progress (this document) |
-| 1 | Vector-only baseline + structured logging | ⏳ Blocked on Step 0 |
+| 0 | Environment & data prep | ✅ Complete |
+| 1 | Vector-only baseline + structured logging | 🔶 Ready to start |
 | 2 | BM25 + hybrid fusion | ⏳ Not started |
 | 3 | Dual-track metadata layer (GT / Transformer) | ⏳ Not started |
 | 4 | Core 5×2 eval matrix (objective + Ragas) | ⏳ Not started |
@@ -43,7 +43,7 @@
 ### The fix
 `data/raw/sroie/SROIE2019/{train,test}/{img,box,entities}` and `data/raw/wildreceipt/wildreceipt/{train,test}.txt` retain per-box polygon coordinates, allowing genuine reading-order reconstruction. Script: `scripts/reconstruct_reading_order.py`.
 
-**Status: COMPLETE.** `data/rag_corpus/{wildreceipt,sroie}.jsonl` written — 1,739 WildReceipt + 973 SROIE = 2,712 documents (CORD not yet included — see open item below).
+**Status: COMPLETE.** `data/rag_corpus/{wildreceipt,sroie,cord}.jsonl` written — see final totals below.
 
 ### Three real bugs found and fixed during verification (all via spot-checking actual output, not trusting aggregate match-rate stats)
 
@@ -61,7 +61,15 @@
 - total: 971/973 (99.8%)
 
 ### Open item
-**CORD not included.** Original dataset composition was WildReceipt (1,739) + SROIE (973) + CORD (972) = 3,684. Only the first two are reconstructed so far. CORD's `ground_truth` field is itemized JSON, not box coordinates — needs a different loader, not a plug-in to the existing box-based functions. Location of local CORD raw data (if any) not yet confirmed.
+~~CORD not included.~~ **RESOLVED.** CORD was still cached locally (`~/.cache/huggingface/datasets/naver-clova-ix___cord-v2`), loaded offline via the `datasets` library (`HF_HUB_OFFLINE=1`) — no re-download needed. Since `cord-v2` has no per-box coordinates (Donut-style structured JSON only, confirmed against the original Phase 2 log's finding), it uses a simpler dedicated path: readable text built directly from the structured `menu`/`total` fields in their natural list order, with only the `total_price` value tagged `B-AMOUNT`/`I-AMOUNT` — no fuzzy matching needed since the text is generated, not reconstructed. `NAME`/`DATE` intentionally stay `O` for all CORD documents, matching the field's genuine absence in the source data (not a limitation to fix).
+
+### Final corpus totals
+- WildReceipt: 1,739 documents
+- SROIE: 973 documents
+- CORD: 1,000 documents
+- **Total: 3,712 documents** (vs. original project's 3,684 — the 28-document difference is CORD-only; original `preprocess.py` likely applied an additional filter, e.g. dropping records with missing `total_price`, that this loader doesn't replicate. Not a data-quality issue, just a minor scope difference worth noting.)
+
+Output files: `data/rag_corpus/{wildreceipt,sroie,cord}.jsonl` (gitignored, regenerable via `scripts/reconstruct_reading_order.py`).
 
 ---
 
@@ -91,10 +99,10 @@
 | New venv | Not yet created — commands drafted, not yet run |
 | Ollama / vLLM / llama.cpp | Not installed — system-level install, shared across venvs (not a pip package) |
 | FAISS / sentence-transformers / rank_bm25 / llama-index / ragas / FlagEmbedding | Not installed — new venv install list finalized (Section 6) |
-| Local LLM choice | Qwen 3 vs Llama 3.x — **not yet decided** |
-| VRAM budget | Extractor (old venv) + BGE-large + local LLM (new venv) concurrently is tight on 8GB. **Not yet decided:** quantize-and-swap on GPU vs. LLM-on-CPU. Current lean: LLM on CPU, since generation only runs during the eval/answer step. |
+| Local LLM choice | **RESOLVED: Qwen 3 (8B), via Ollama** |
+| VRAM budget / LLM placement | **RESOLVED: CPU via Ollama.** Extractor + BGE-large stay on GPU (small, run frequently during indexing/queries); LLM runs on CPU since generation only happens during the eval/answer step, not every indexing iteration — accepts slower generation in exchange for zero VRAM contention and simpler setup (no quantize/swap logic needed). Ollama installed system-wide, shared across both venvs (not a pip package). |
 
-**Open risk not yet closed:** `import mamba_ssm` smoke test in the *old* venv on the current gcc-13 toolchain — determines whether Mamba/Hybrid checkpoints are usable now or deferred until the linkage table step.
+**Resolved:** `import mamba_ssm` smoke test passed in the old venv — import succeeded AND a real GPU forward pass produced the correct output shape `(1, 32, 64)`, confirming the compiled `sm_120` kernels genuinely work despite the gcc-13 (vs. original gcc-11) system compiler. This makes sense in hindsight: the compiled `.so` files were already built against gcc-11 when the extraction project set this up — the current system gcc only matters if `mamba_ssm` needed rebuilding from source again, which it doesn't. **Mamba and Hybrid checkpoints are usable now, no deferral needed for the linkage table step.**
 
 ---
 
@@ -139,7 +147,12 @@ Ran inside the **new venv only** (`~/document-intelligence-rag/venv`). Old venv 
 
 ## 7. Untriaged files — open question
 
-An untracked `app/` directory exists in the *extraction* repo (`app/inference.py`, `app/dashboard.py`, `app/charts.py` — distinct from the git-tracked `app_gradio/`), plus loose `evaluation/`, `get_real_examples.py`, `peek_test_sample.py`, and two zips (`checkpoints_phase5.zip`, `evaluation_phase6.zip`). None committed. **Not yet triaged** — unclear if WIP scaffold worth carrying into the new repo or dead leftovers. Should be resolved before copying anything into `document-intelligence-rag`.
+**RESOLVED.** Findings from inspection (`diff -rq app/ app_gradio/`): `app/` is the original Streamlit dashboard draft (has `dashboard.py`), deliberately superseded by the Gradio rebuild in `app_gradio/` (has `app.py` + `theme.py` instead) — matches the session log's documented rebuild. Neither dashboard is needed for this project; only `app_gradio/inference.py::load_model()` matters (already confirmed reusable, Section 4).
+
+Actions taken:
+- **Deleted:** `checkpoints_phase5.zip`, `evaluation_phase6.zip` (redundant transfer backups, ~1.1GB freed), `cloudflared-linux-amd64.deb` (leftover installer)
+- **Kept as-is:** `app/` (harmless, low priority, not needed but not worth the cleanup effort right now)
+- **Committed to the old repo:** `evaluation/` — real, completed Phase 6 work (`evaluate.py`, `benchmark.py`, `seqlen_ablation.py`, `significance_test.py` + result JSONs) that had never been committed, meaning it previously had zero backup beyond the one machine. Now pushed.
 
 ---
 
@@ -164,26 +177,49 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 | Hybrid | — | — | — | — |
 | Mamba | — | — | — | — |
 
----
-
-## 9. Gating checklist before Step 1 can start
+## 9. Gating checklist for Step 0 — ALL COMPLETE
 
 - [x] New venv created (`~/document-intelligence-rag/venv`, Python 3.12)
 - [x] Step 0 stack installed in new venv (Section 6) — two real fixes applied: `ragas`/`langchain-community` shim, `torch` CUDA build pin
 - [x] New repo created on GitHub and pushed (`Document-Intelligence-RAG`)
 - [x] Reading-order reconstruction script written + verified (8-doc spot-check + 2 corpus-wide scans, 3 real bugs found and fixed)
-- [ ] BIO tags re-associated with reconstructed text — **done as part of reconstruction itself** (tags are generated directly from raw sources, not re-associated after the fact — see Section 3)
-- [ ] CORD integration (not yet started — open item, Section 3)
-- [ ] `import mamba_ssm` smoke test in **old venv** on gcc-13 toolchain — determines Mamba/Hybrid checkpoint availability now vs. deferred
-- [ ] LLM placement decision made (CPU vs. GPU-swap) — doesn't need to be final, needs to be explicit
-- [ ] `app/` vs `app_gradio/` vs loose `evaluation/`/zips triaged in old repo — keep, discard, or archive
+- [x] BIO tags re-associated with reconstructed text — **done as part of reconstruction itself** (tags are generated directly from raw sources, not re-associated after the fact — see Section 3)
+- [x] CORD integration — loaded offline from existing HF cache, structured-JSON path (no fuzzy matching needed), 1,000 documents
+- [x] `import mamba_ssm` smoke test in **old venv** on gcc-13 toolchain — PASSED (import + real GPU forward pass both succeeded)
+- [x] LLM placement decision made — CPU via Ollama, Qwen 3 (8B)
+- [x] `app/` triage — resolved: zips + .deb deleted, real evaluation/ work committed to old repo, app/ left in place (harmless, superseded by app_gradio/)
 
 ---
 
 ## 10. Next immediate action (as of this update)
 
-Reading-order reconstruction script is the highest-priority unblock — nothing downstream can proceed without it. `app/` triage is a quick, low-risk parallel task.
+**Step 0 is fully complete.** All eight gating items resolved: venv, dependency stack, GitHub repo, reading-order reconstruction (3 sources, 3,712 documents), mamba_ssm smoke test (passed), LLM placement (CPU via Ollama, Qwen 3 8B), and app/ triage.
+
+Next: **Step 1 — Vector-only baseline + structured logging.** Build chunking, embed the corpus with `bge-large-en-v1.5`, index with FAISS, and wire in the logging schema before any retrieval logic — per the original build order, logging goes in from the start, not bolted on later.
 
 ---
 
-*Update this file after every resolved decision or completed gate — don't rely on chat history to reconstruct project state in future sessions.*
+## 11. Step 1 progress — Vector-only baseline + structured logging
+
+### 1a. Chunking — COMPLETE
+
+Script: `scripts/chunk_corpus.py`. One chunk per document (receipts are short, self-contained — no internal splitting needed).
+
+**Result:** 3,712 chunks written to `data/chunks/chunks.jsonl`, unifying all three sources with stable `chunk_id`s and clean ground-truth field extraction (`vendor`/`date`/`amount` as reconstructed strings, not just raw BIO tags) — this is what Step 3's dual-track metadata layer will consume directly.
+
+**Ground-truth field coverage:**
+- amount: 3,595/3,712 (96.8%)
+- vendor: 2,281/3,712 (61.4% overall; ~84% of WildReceipt+SROIE docs — CORD never has this field by design, dragging the overall percentage down)
+- date: 2,442/3,712 (65.8% overall; ~90% of WildReceipt+SROIE docs, same CORD effect)
+
+Missing values are genuine source-data limitations (OCR/labeling gaps in the original WildReceipt/SROIE datasets), not artifacts of the reconstruction pipeline — confirmed via the corpus-wide coverage stats built into the script.
+
+Chunk length: 14–1,858 chars, avg 371. Five chunks under 20 chars flagged and inspected — all genuine minimal single-item CORD receipts, not corruption.
+
+**Bug found and fixed during this step:** the coverage-stats block crashed with `ZeroDivisionError` when run against an empty/missing corpus (wrong working directory on first attempt). Fixed with an explicit empty-check that fails with a clear diagnostic message instead of a raw traceback.
+
+### 1b. Embedding + FAISS index — NEXT
+
+### 1c. Structured logging schema — NOT STARTED
+
+---
