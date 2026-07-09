@@ -195,7 +195,7 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 
 **Step 0 is fully complete.** All eight gating items resolved: venv, dependency stack, GitHub repo, reading-order reconstruction (3 sources, 3,712 documents), mamba_ssm smoke test (passed), LLM placement (CPU via Ollama, Qwen 3 8B), and app/ triage.
 
-Next: **Step 1 — Vector-only baseline + structured logging.** Build chunking, embed the corpus with `bge-large-en-v1.5`, index with FAISS, and wire in the logging schema before any retrieval logic — per the original build order, logging goes in from the start, not bolted on later.
+Next: **Step 3 — Dual-track metadata layer** (Steps 1 and 2 now complete — see Sections 11-12).
 
 ---
 
@@ -264,5 +264,50 @@ Scripts: `scripts/dense_retrieve.py` (extracted from embed_index.py's inline che
 - *"receipt for refueling a car"* — surfaced a real, legitimate finding rather than a bug: dense retrieval correctly identified genuine gas-station/fuel-pump receipts (Shell, `FUELKINGSERVICECENTER`, litres/price-per-litre fields) with zero literal keyword overlap — real semantic understanding. BM25, by contrast, returned car WASHES almost exclusively, because those chunks contain a transaction field literally labeled `"Car#304"` (the `#` breaks tokenization into the literal token `"car"`), which lexically matches the query's `"car"` despite being semantically unrelated (a car wash transaction ID, not the vehicle-refueling concept). **Consequence:** in the hybrid fusion for this query, BM25's confidently-wrong car-wash matches crowded out dense's correct fuel-station results — hybrid was measurably worse than dense-only here. Logged as a genuine research finding (directly relevant to RQ3: retrieval strategy trade-offs), not something to engineer around at this stage — exactly the pattern Step 6's "BM25-specific failures" error category exists to capture systematically.
 
 ---
+
+## 13. Step 3 progress — Dual-track metadata layer
+
+### 3a. Tokens added back to chunks.jsonl — COMPLETE
+
+Small addition to `chunk_corpus.py`: chunk records now carry `tokens` alongside `text`, for potential future alignment checks. `chunk_id`s unchanged (same ordering), so no downstream rebuild needed.
+
+### 3b. Transformer-extracted metadata — COMPLETE
+
+Script: `extract_metadata_transformer.py`, run in the **old venv**, importing `app_gradio.inference.extract_entities_from_text()` / `entities_to_field_dict()` directly — real inference code, not reimplemented. Writes output into the *new* repo's `data/metadata/transformer_extracted.jsonl` — a genuine cross-venv file-handoff (plain OS write, no shared imports).
+
+**Result:** all 3,712 chunks processed in 57.8s (~64 chunks/sec) using the Transformer checkpoint, seed 456 (best test F1, 0.6303, per Section 4).
+
+**Predicted field coverage vs. ground truth:**
+| Field | Ground truth | Transformer-predicted |
+|---|---|---|
+| vendor | 61.4% | 68.3% (over-predicts) |
+| date | 65.8% | 64.0% |
+| amount | 96.8% | 81.4% (under-predicts) |
+
+**Sample-level verification confirms genuine, expected model error** (not a pipeline bug): real false positives (a garbled OCR line mistagged as a second vendor name; a barcode number mistagged as an amount; a marketing tagline "Our guac rocks." mistagged as a business name where ground truth has no vendor at all), alongside correct extractions where the model got it right. This mix is exactly what "imperfect real-world extraction" should look like, and is the actual signal RQ2 needs.
+
+### 3c. Per-field extraction accuracy (precision/recall) — COMPLETE
+
+Script: `scripts/eval_metadata_extraction.py`.
+
+**Real methodology bug found and fixed before trusting results:** the first version compared ground truth's single first-matched value against the Transformer prediction's *entire comma-joined string of all matches* (since `app_gradio.inference.entities_to_field_dict()` joins multiple spans for display purposes). This is an apples-to-oranges comparison — receipts commonly have multiple genuine AMOUNT spans (subtotal, tax, total), so comparing "one value" against "a joined list of values" systematically failed even when the model correctly found the right value among several. Symptom: AMOUNT's exact-match F1 was a nonsensical 0.153 while fuzzy-match F1 was 0.661 — a huge, suspicious gap.
+
+**Fix:** `extract_metadata_transformer.py` now outputs proper `all_vendors`/`all_dates`/`all_amounts` lists (mirroring `chunk_corpus.py`'s ground-truth schema exactly) instead of relying on the joined-string display format. `eval_metadata_extraction.py` rewritten to do genuine set-based comparison — matching each GT value against the full set of predicted values and vice versa, not a single-value-vs-string comparison.
+
+**Verified fix worked:** AMOUNT's exact/fuzzy F1 converged from a suspicious 0.153/0.661 gap to a coherent 0.591/0.613 — exactly what's expected once the comparison stopped systematically penalizing correct multi-value extractions.
+
+**Final per-field accuracy (Transformer, seed 456, vs. ground truth):**
+
+| Field | Exact P / R / F1 | Fuzzy P / R / F1 |
+|---|---|---|
+| vendor | 0.803 / 0.915 / 0.855 | 0.823 / 0.937 / 0.876 |
+| date | 0.619 / 0.650 / 0.634 | 0.887 / 0.930 / 0.908 |
+| amount | 0.530 / 0.667 / 0.591 | 0.550 / 0.692 / 0.613 |
+
+**Sample-level verification confirms genuine, interpretable model behavior:** e.g. `chunk_000005` — model correctly extracted subtotal and tax but missed the actual total amount, a real and meaningful recall failure on the most important amount field. This is the honest "how much does imperfect extraction erode the metadata benefit" signal RQ2 needs — now on solid methodological footing.
+
+Full report (including mismatch samples per field) saved to `data/metadata/extraction_accuracy_report.json` (gitignored, regenerable).
+
+### 3d. Wire metadata filters into retrieval — NEXT
 
 ---
