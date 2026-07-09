@@ -246,3 +246,21 @@ Script: `scripts/logging_schema.py`. `QueryLogger` class, one instance per syste
 ## STEP 1 — COMPLETE (chunking, embedding+FAISS, logging schema all done)
 
 ---
+
+## 12. Step 2 progress — BM25 + hybrid fusion
+
+Scripts: `scripts/dense_retrieve.py` (extracted from embed_index.py's inline check into a proper reusable `DenseRetriever` class), `scripts/bm25_retrieve.py`, `scripts/fusion.py` (Reciprocal Rank Fusion, k=60 standard constant).
+
+**Fusion method:** RRF chosen over weighted score fusion — combines by rank position, not raw score value, avoiding the need to normalize cosine similarity against BM25 scores (genuinely different scales, no principled way to combine them as raw numbers).
+
+**Real bug found and fixed:** initial BM25 results were completely wrong-topic — querying *"What is the total amount on the Walmart receipt?"* returned unrelated BHPETROL gas station receipts as the top BM25 matches, with zero Walmart connection. Root cause, confirmed via diagnostic: BM25 tokenization had no stopword removal, so common words in the query (`is`, `the`, `on`, `what`) were treated as real search terms. A BHPETROL chunk happened to contain a boilerplate disclaimer — *"This is not a receipt, a tax invoice will be issued..."* — whose natural-language phrasing shared more stopwords with the query than an actual Walmart receipt (which has no reason to contain conversational words like "is" or "on"). Fixed by adding stopword removal to `tokenize()` — unlike dense embeddings (which use function words as context), BM25 needs this explicitly since it treats every query token as an equally weighted independent signal.
+
+**Verified after fix:** re-ran the same query — BM25's top results are now genuinely Walmart-related, and hybrid fusion shows `found_by=dense+bm25` (both retrievers agreeing) on every top-5 result, versus completely disjoint lists before the fix.
+
+**Observation for later (not a bug):** hybrid top results currently lean toward Walmart promotional/boilerplate text over chunks with actual dollar totals — RRF correctly rewarding chunks strong in both lists, but "Walmart" as a keyword dominates over "total amount" as a concept. Worth watching in Step 4's Recall@k evaluation and Step 6's error analysis, not something to chase further at this stage.
+
+**Status:** dense retrieval, BM25 retrieval, and RRF fusion all working and spot-verified. BM25 index cached (`data/index/bm25_index.pkl`, gitignored, regenerable).
+
+---
+
+---
