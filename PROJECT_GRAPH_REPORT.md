@@ -61,7 +61,15 @@
 - total: 971/973 (99.8%)
 
 ### Open item
-**CORD not included.** Original dataset composition was WildReceipt (1,739) + SROIE (973) + CORD (972) = 3,684. Only the first two are reconstructed so far. CORD's `ground_truth` field is itemized JSON, not box coordinates — needs a different loader, not a plug-in to the existing box-based functions. Location of local CORD raw data (if any) not yet confirmed.
+~~CORD not included.~~ **RESOLVED.** CORD was still cached locally (`~/.cache/huggingface/datasets/naver-clova-ix___cord-v2`), loaded offline via the `datasets` library (`HF_HUB_OFFLINE=1`) — no re-download needed. Since `cord-v2` has no per-box coordinates (Donut-style structured JSON only, confirmed against the original Phase 2 log's finding), it uses a simpler dedicated path: readable text built directly from the structured `menu`/`total` fields in their natural list order, with only the `total_price` value tagged `B-AMOUNT`/`I-AMOUNT` — no fuzzy matching needed since the text is generated, not reconstructed. `NAME`/`DATE` intentionally stay `O` for all CORD documents, matching the field's genuine absence in the source data (not a limitation to fix).
+
+### Final corpus totals
+- WildReceipt: 1,739 documents
+- SROIE: 973 documents
+- CORD: 1,000 documents
+- **Total: 3,712 documents** (vs. original project's 3,684 — the 28-document difference is CORD-only; original `preprocess.py` likely applied an additional filter, e.g. dropping records with missing `total_price`, that this loader doesn't replicate. Not a data-quality issue, just a minor scope difference worth noting.)
+
+Output files: `data/rag_corpus/{wildreceipt,sroie,cord}.jsonl` (gitignored, regenerable via `scripts/reconstruct_reading_order.py`).
 
 ---
 
@@ -173,7 +181,7 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 - [x] New repo created on GitHub and pushed (`Document-Intelligence-RAG`)
 - [x] Reading-order reconstruction script written + verified (8-doc spot-check + 2 corpus-wide scans, 3 real bugs found and fixed)
 - [ ] BIO tags re-associated with reconstructed text — **done as part of reconstruction itself** (tags are generated directly from raw sources, not re-associated after the fact — see Section 3)
-- [ ] CORD integration (not yet started — open item, Section 3)
+- [x] CORD integration — loaded offline from existing HF cache, structured-JSON path (no fuzzy matching needed), 1,000 documents
 - [ ] `import mamba_ssm` smoke test in **old venv** on gcc-13 toolchain — determines Mamba/Hybrid checkpoint availability now vs. deferred
 - [ ] LLM placement decision made (CPU vs. GPU-swap) — doesn't need to be final, needs to be explicit
 - [ ] `app/` vs `app_gradio/` vs loose `evaluation/`/zips triaged in old repo — keep, discard, or archive
@@ -185,5 +193,3 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 Reading-order reconstruction script is the highest-priority unblock — nothing downstream can proceed without it. `app/` triage is a quick, low-risk parallel task.
 
 ---
-
-*Update this file after every resolved decision or completed gate — don't rely on chat history to reconstruct project state in future sessions.*
