@@ -259,7 +259,9 @@ Scripts: `scripts/dense_retrieve.py` (extracted from embed_index.py's inline che
 
 **Observation for later (not a bug):** hybrid top results currently lean toward Walmart promotional/boilerplate text over chunks with actual dollar totals — RRF correctly rewarding chunks strong in both lists, but "Walmart" as a keyword dominates over "total amount" as a concept. Worth watching in Step 4's Recall@k evaluation and Step 6's error analysis, not something to chase further at this stage.
 
-**Status:** dense retrieval, BM25 retrieval, and RRF fusion all working and spot-verified. BM25 index cached (`data/index/bm25_index.pkl`, gitignored, regenerable).
+**Additional verification queries run:**
+- *"WALMART receipt"* — clean confirmation the stopword fix generalizes: dense, BM25, and hybrid all returned genuinely Walmart-related results, full `dense+bm25` agreement across the top 5.
+- *"receipt for refueling a car"* — surfaced a real, legitimate finding rather than a bug: dense retrieval correctly identified genuine gas-station/fuel-pump receipts (Shell, `FUELKINGSERVICECENTER`, litres/price-per-litre fields) with zero literal keyword overlap — real semantic understanding. BM25, by contrast, returned car WASHES almost exclusively, because those chunks contain a transaction field literally labeled `"Car#304"` (the `#` breaks tokenization into the literal token `"car"`), which lexically matches the query's `"car"` despite being semantically unrelated (a car wash transaction ID, not the vehicle-refueling concept). **Consequence:** in the hybrid fusion for this query, BM25's confidently-wrong car-wash matches crowded out dense's correct fuel-station results — hybrid was measurably worse than dense-only here. Logged as a genuine research finding (directly relevant to RQ3: retrieval strategy trade-offs), not something to engineer around at this stage — exactly the pattern Step 6's "BM25-specific failures" error category exists to capture systematically.
 
 ---
 
