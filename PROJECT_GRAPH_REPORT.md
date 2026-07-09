@@ -218,8 +218,31 @@ Chunk length: 14–1,858 chars, avg 371. Five chunks under 20 chars flagged and 
 
 **Bug found and fixed during this step:** the coverage-stats block crashed with `ZeroDivisionError` when run against an empty/missing corpus (wrong working directory on first attempt). Fixed with an explicit empty-check that fails with a clear diagnostic message instead of a raw traceback.
 
-### 1b. Embedding + FAISS index — NEXT
+### 1b. Embedding + FAISS index — COMPLETE
 
-### 1c. Structured logging schema — NOT STARTED
+Script: `scripts/embed_index.py`. Model: `BAAI/bge-large-en-v1.5` on GPU, `IndexFlatIP` (inner product on L2-normalized vectors = cosine similarity).
+
+**Result:** 3,712 vectors, dim 1024, embedded in 155.4s (~24 chunks/sec on the RTX 5060). Index + parallel metadata (`chunk_id`/`doc_id`/`source`/`text`/`ground_truth` per vector position) + config (model name, similarity method, query prefix) saved to `data/index/` — gitignored, fully regenerable from `chunks.jsonl`.
+
+**Design note carried forward for the retrieval script:** BGE is asymmetric — passages (corpus chunks) get no prefix, but queries need `"Represent this sentence for searching relevant passages: "` prepended at retrieval time. Saved explicitly in `index_config.json` so this isn't re-discovered or gotten wrong later.
+
+**Sanity check passed:** query *"What is the total amount?"* returned three receipts genuinely containing totals, scores 0.66–0.68 (a healthy cosine similarity band, not suspiciously perfect or near-zero) — real evidence the embedding space is behaving sensibly, not just that the code ran without error.
+
+### 1c. Structured logging schema — COMPLETE
+
+Script: `scripts/logging_schema.py`. `QueryLogger` class, one instance per system-run, writing to `logs/{system}__{metadata_source}.jsonl` (self-describing filename, no need to open a file to know what's in it).
+
+**Schema fields** (per query): `query_id`, `query_text`, `question_type` (A-E taxonomy), `retrieved_chunks` (chunk_id/score/text), `metadata_filters_applied`, `reranker_scores`, `generated_answer`, `ground_truth_answer`, `retrieval_latency_ms`, `generation_latency_ms`, plus `extra` as an escape hatch for system-specific detail (e.g. hybrid fusion weights) without forcing every system into an identical schema.
+
+**Design decisions:**
+- Scores are NOT normalized across systems in the log — a `vector_only` cosine score and a `bm25_only` score are genuinely different numbers; any cross-system normalization is an explicit analysis-time decision (Step 6), not silently baked in here.
+- `system`/`metadata_source`/`question_type` are validated against fixed vocabularies — typos become loud errors immediately instead of silently fragmenting logs.
+- `reset()` is explicit, never automatic — re-running a script can't silently wipe prior logged queries.
+
+**Verified:** self-test (write → read back → assert round-trip integrity) passes both in isolated testing and on the target machine before being trusted as foundational infrastructure for every later step.
+
+---
+
+## STEP 1 — COMPLETE (chunking, embedding+FAISS, logging schema all done)
 
 ---
