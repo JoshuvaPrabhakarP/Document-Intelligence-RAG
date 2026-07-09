@@ -394,6 +394,113 @@ def load_sroie(sroie_dir):
 
 
 # ---------------------------------------------------------------------------
+# CORD (naver-clova-ix/cord-v2)
+# ---------------------------------------------------------------------------
+# Unlike SROIE/WildReceipt, cord-v2 has NO per-box coordinates — it's the
+# Donut-style simplified format: image + a structured ground_truth JSON.
+# There's nothing to reconstruct reading order FROM, so this path is
+# deliberately simpler: build readable text directly from the structured
+# fields (already in natural line order), and tag only the total amount —
+# no fuzzy matching needed since we generate the text ourselves and know
+# exactly where the value lands. CORD has no native date/company field
+# (confirmed in the original project's Phase 2 log), so NAME/DATE stay "O"
+# for every CORD document — matching the field's real absence, not faking
+# labels that don't exist in the source.
+
+def extract_cord_fields(gt_parse):
+    menu = gt_parse.get("menu", [])
+    if isinstance(menu, dict):
+        menu = [menu]
+    elif not isinstance(menu, list):
+        menu = []
+
+    total = gt_parse.get("total", {})
+    if isinstance(total, list):
+        total = total[0] if total else {}
+    if not isinstance(total, dict):
+        total = {}
+    total_price = total.get("total_price")
+
+    return menu, total_price
+
+
+def build_cord_record(doc_id, ground_truth_str):
+    try:
+        gt = json.loads(ground_truth_str)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    gt_parse = gt.get("gt_parse", gt)
+    menu, total_price = extract_cord_fields(gt_parse)
+
+    tokens, tags, text_lines = [], [], []
+
+    for item in menu:
+        if not isinstance(item, dict):
+            continue
+        parts = []
+        for key in ("nm", "cnt", "price"):
+            val = item.get(key)
+            if val:
+                parts.append(str(val).strip())
+        if not parts:
+            continue
+        line = " ".join(parts)
+        text_lines.append(line)
+        for w in line.split():
+            tokens.append(w)
+            tags.append("O")
+
+    if total_price:
+        total_str = str(total_price).strip()
+        line = f"Total: {total_str}"
+        text_lines.append(line)
+        tokens.append("Total:")
+        tags.append("O")
+        for w_idx, w in enumerate(total_str.split()):
+            tokens.append(w)
+            tags.append("B-AMOUNT" if w_idx == 0 else "I-AMOUNT")
+
+    if not tokens:
+        return None
+
+    return {
+        "doc_id": doc_id,
+        "source": "cord",
+        "text": "\n".join(text_lines),
+        "tokens": tokens,
+        "tags": tags,
+    }
+
+
+def load_cord(dataset_name="naver-clova-ix/cord-v2"):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")  # already cached, no network needed
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("  'datasets' package not installed in this venv — skipping CORD.")
+        return []
+
+    records = []
+    try:
+        ds_dict = load_dataset(dataset_name)
+    except Exception as e:
+        print(f"  Could not load {dataset_name}: {e}")
+        return []
+
+    for split_name, split_ds in ds_dict.items():
+        for i, example in enumerate(split_ds):
+            gt_str = example.get("ground_truth")
+            if not gt_str:
+                continue
+            doc_id = f"cord_{split_name}_{i}"
+            record = build_cord_record(doc_id, gt_str)
+            if record:
+                records.append(record)
+
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -436,6 +543,8 @@ def main():
     ap.add_argument("--sroie-dir", required=True)
     ap.add_argument("--out-dir", default="data/rag_corpus")
     ap.add_argument("--verify-sample", type=int, default=5)
+    ap.add_argument("--skip-cord", action="store_true")
+    ap.add_argument("--cord-dataset", default="naver-clova-ix/cord-v2")
     args = ap.parse_args()
 
     print("Loading WildReceipt...")
@@ -452,9 +561,22 @@ def main():
     write_jsonl(sroie_records, os.path.join(args.out_dir, "sroie.jsonl"))
     print(f"  Wrote {len(sroie_records)} records -> {args.out_dir}/sroie.jsonl")
 
+    cord_records = []
+    if not args.skip_cord:
+        print("\nLoading CORD...")
+        cord_records = load_cord(args.cord_dataset)
+        print(f"  {len(cord_records)} documents")
+        write_jsonl(cord_records, os.path.join(args.out_dir, "cord.jsonl"))
+        print(f"  Wrote {len(cord_records)} records -> {args.out_dir}/cord.jsonl")
+
+    total = len(wr_records) + len(sroie_records) + len(cord_records)
+    print(f"\nTotal documents across all sources: {total}")
+
     if args.verify_sample > 0:
         print_verification_sample(wr_records, args.verify_sample)
         print_verification_sample(sroie_records, args.verify_sample)
+        if cord_records:
+            print_verification_sample(cord_records, args.verify_sample)
 
 
 if __name__ == "__main__":
