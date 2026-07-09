@@ -43,7 +43,7 @@
 ### The fix
 `data/raw/sroie/SROIE2019/{train,test}/{img,box,entities}` and `data/raw/wildreceipt/wildreceipt/{train,test}.txt` retain per-box polygon coordinates, allowing genuine reading-order reconstruction. Script: `scripts/reconstruct_reading_order.py`.
 
-**Status: COMPLETE.** `data/rag_corpus/{wildreceipt,sroie}.jsonl` written — 1,739 WildReceipt + 973 SROIE = 2,712 documents (CORD not yet included — see open item below).
+**Status: COMPLETE.** `data/rag_corpus/{wildreceipt,sroie,cord}.jsonl` written — see final totals below.
 
 ### Three real bugs found and fixed during verification (all via spot-checking actual output, not trusting aggregate match-rate stats)
 
@@ -180,7 +180,7 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 - [x] Step 0 stack installed in new venv (Section 6) — two real fixes applied: `ragas`/`langchain-community` shim, `torch` CUDA build pin
 - [x] New repo created on GitHub and pushed (`Document-Intelligence-RAG`)
 - [x] Reading-order reconstruction script written + verified (8-doc spot-check + 2 corpus-wide scans, 3 real bugs found and fixed)
-- [ ] BIO tags re-associated with reconstructed text — **done as part of reconstruction itself** (tags are generated directly from raw sources, not re-associated after the fact — see Section 3)
+- [x] BIO tags re-associated with reconstructed text — **done as part of reconstruction itself** (tags are generated directly from raw sources, not re-associated after the fact — see Section 3)
 - [x] CORD integration — loaded offline from existing HF cache, structured-JSON path (no fuzzy matching needed), 1,000 documents
 - [ ] `import mamba_ssm` smoke test in **old venv** on gcc-13 toolchain — determines Mamba/Hybrid checkpoint availability now vs. deferred
 - [ ] LLM placement decision made (CPU vs. GPU-swap) — doesn't need to be final, needs to be explicit
@@ -190,6 +190,6 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 
 ## 10. Next immediate action (as of this update)
 
-Reading-order reconstruction script is the highest-priority unblock — nothing downstream can proceed without it. `app/` triage is a quick, low-risk parallel task.
+Reading-order reconstruction is fully complete (all 3 sources). Three items remain before Step 1, none dependent on each other: the `mamba_ssm` smoke test, the LLM placement decision, and the `app/` triage.
 
 ---
