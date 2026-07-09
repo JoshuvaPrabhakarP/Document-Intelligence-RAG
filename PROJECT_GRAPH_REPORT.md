@@ -195,7 +195,7 @@ Every metadata-aware row runs twice (GT and Transformer) — 5 systems × 2 meta
 
 **Step 0 is fully complete.** All eight gating items resolved: venv, dependency stack, GitHub repo, reading-order reconstruction (3 sources, 3,712 documents), mamba_ssm smoke test (passed), LLM placement (CPU via Ollama, Qwen 3 8B), and app/ triage.
 
-Next: **Step 3 — Dual-track metadata layer** (Steps 1 and 2 now complete — see Sections 11-12).
+Next: **Step 4 — Core 5×2 evaluation matrix** (Steps 1, 2, and 3 now complete — see Sections 11-13).
 
 ---
 
@@ -308,6 +308,16 @@ Script: `scripts/eval_metadata_extraction.py`.
 
 Full report (including mismatch samples per field) saved to `data/metadata/extraction_accuracy_report.json` (gitignored, regenerable).
 
-### 3d. Wire metadata filters into retrieval — NEXT
+### 3d. Wire metadata filters into retrieval — COMPLETE
+
+Script: `scripts/metadata_filter.py`. `MetadataRetriever` wraps the existing dense/hybrid retrievers with a metadata filter drawn from either source (`ground_truth` or `transformer`) — this is what makes the 5×2 matrix's Metadata+Vector and Metadata+Hybrid rows real, runnable systems in both metadata-source variants.
+
+**Approach:** retrieve-then-filter. The FAISS index is flat/non-filterable at this scale (3,712 docs) — pre-filtering the vector index itself only pays off at much larger corpus sizes, so this pulls a wide candidate pool (default 100) from the base retriever, then filters down to metadata-matching chunks. Same fuzzy-matching convention as Step 3c's accuracy evaluation, so filtering behavior stays consistent with how extraction accuracy itself was measured.
+
+**Verification exercise worth noting:** an initial test (`query="total amount"`, `filter=vendor:Walmart`) returned **zero results from both metadata sources** — investigated rather than assumed broken. Isolated the filter logic directly (confirmed 32 real Walmart chunks exist in ground truth, `matches()` correctly identifies them) before concluding the zero-result outcome was genuine, informative retrieval behavior: a generic query with no Walmart keyword simply didn't surface any of those 32 chunks within the candidate pool — not a bug. Re-tested with a query containing the actual signal (`"Walmart total amount"`) and got correct results from both sources, confirming the full pipeline works end-to-end.
+
+**STEP 3 — COMPLETE.** All four sub-steps done: tokens added, Transformer metadata extracted (with a genuine field-coverage/error analysis), per-field accuracy computed (with a real set-based-comparison bug found and fixed), and metadata filtering wired into retrieval for both sources.
+
+---
 
 ---
