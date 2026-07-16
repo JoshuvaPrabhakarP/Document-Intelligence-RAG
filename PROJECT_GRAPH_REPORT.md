@@ -5,7 +5,7 @@
 
 **Prior project (asset source only):** `github.com/JoshuvaPrabhakarP/hybrid-doc-extractor` (its Phases 1-8, complete)
 **This project:** repo created and live — `github.com/JoshuvaPrabhakarP/Document-Intelligence-RAG`
-**Current stage:** This project's Phase 1, Steps 0-5 — COMPLETE. Ready to begin Step 6 (error analysis).
+**Current stage:** This project's Phase 1, Steps 0-6 — COMPLETE. Ready to begin Step 7 (README + write-up).
 
 ---
 
@@ -29,7 +29,7 @@
 | 3 | Dual-track metadata layer (GT / Transformer) | ⏳ Not started |
 | 4 | Core 5×2 eval matrix (objective + Ragas) | ✅ Complete |
 | 5 | Reranker ablation (quarantined) | ✅ Complete |
-| 6 | Error analysis (from logs, no re-running) | ⏳ Not started |
+| 6 | Error analysis (from logs, no re-running) | ✅ Complete |
 | 7 | README + write-up | ⏳ Not started |
 | 8 | Deployment (FastAPI → Gradio → Cloudflare Tunnel) | ⏳ Not started |
 
@@ -195,9 +195,9 @@ Recall@10 is **identical** between Ground Truth and Transformer despite the Tran
 
 ## 10. Next immediate action (as of this update)
 
-**Steps 0-5 are all complete.** Step 4's core 5×2 matrix ran end-to-end (objective metrics fully trustworthy; Ragas partially trustworthy — see Section 14). Step 5's reranker ablation ran cleanly against 3 new system-runs with zero disruption to any of Step 4's 7 logs — see Section 15 for the full, honest (mixed) verdict.
+**Steps 0-6 are all complete.** Step 4's core 5×2 matrix ran end-to-end (objective metrics fully trustworthy; Ragas partially trustworthy — see Section 14). Step 5's reranker ablation ran cleanly against 3 new system-runs with zero disruption to any of Step 4's 7 logs — see Section 15 for the full, honest (mixed) verdict. Step 6's error analysis mined all 10 logs with zero re-running, catching 3 real classification errors during its own pilot spot-check and surfacing a genuinely valuable mechanistic finding (metadata filtering protects reranking from cluster-breaking) plus a real field-coverage gap in the linkage table — see Section 16.
 
-Next: **Step 6 — Error analysis** (from logs, no re-running, per the original design).
+Next: **Step 7 — README + write-up** (per the original design).
 
 ---
 
@@ -435,5 +435,43 @@ Scripts: `scripts/rerank.py` (the reranker), `scripts/run_reranker_ablation.py` 
 Full report: `data/eval/reranker_ablation_report.json` (gitignored, regenerable).
 
 **STEP 5 — COMPLETE.** Two real bugs found and fixed (a library/framework incompatibility, and a reintroduced pool_size confound). Result is a genuine, reportable mixed finding — reranking helps single-target and metadata-filtered retrieval meaningfully, but measurably hurts unfiltered multi-target queries, at a non-trivial latency cost. All of Step 4's baselines and logs remain fully intact and unmodified throughout.
+
+---
+
+## 16. Step 6 progress — Error analysis (from logs, no re-running)
+
+Script: `scripts/error_analysis.py` — reads only the 10 existing system-run logs (7 from Step 4 + 3 reranked from Step 5), the query set, the chunk corpus, and the 4 existing summary reports. Makes zero new retrieval calls, zero new LLM calls, needs no GPU. Writes exactly one new file, `data/eval/error_analysis_report.json` — never touches any existing log or report (verified: all 10 logs confirmed still 57 lines each after running).
+
+Six error categories (each grounded in a thread already flagged elsewhere in this report as "worth a closer look in Step 6"), plus a per-source breakdown and a per-field metadata-coverage analysis, per your two additions to the plan.
+
+### Three real classification errors found and fixed during the pilot spot-check (before writing the full report)
+
+**Error 1 — Category 1 (BM25 keyword collisions) initially flagged a false positive.** The one example it found (an AEON receipt) turned out to be BM25 confusing two *different real receipts from the same actual vendor* (AEON has 23 receipts in this corpus) — a disambiguation miss, not the car-wash-style "different vendor entirely" collision this category is about. Fixed by excluding same-vendor cases and requiring genuine literal-token overlap with a *different* vendor. **Result after the fix: 0 genuine collisions found among single-target factual queries** — an honest finding, not a sign the pattern doesn't exist: the original Section 12 car-wash collision was observed on a *qualitative* semantic-paraphrase query (no single target), which this category structurally can't see. Category 5 below captures that exact case directly.
+
+**Error 2 — a real labeling gap surfaced while spot-checking Category 4.** Two "intruder" chunks that appeared to replace genuine AEON cluster members after reranking turned out to be genuine AEON receipts themselves — their `ground_truth.vendor` string is `"AEON CO. (M) BHD"` without the `"(126926-H)"` registration-number suffix present on other AEON receipts, a real OCR/labeling variance in the source data. `build_eval_queries.py`'s vendor grouping (Step 4) uses exact string match, so these got excluded from the "official" target set even though they're the same real business. Fixed by cross-checking each intruder against the vendor filter with the same fuzzy-match convention used elsewhere in the project, and flagging likely-mislabeled intruders explicitly rather than presenting them as clean reranker errors.
+
+**Error 3 — Category 4 was comparing the wrong system pair entirely.** Manually computing before/after recovered-counts for all 14 metadata-filtered queries by hand (to sanity-check against Section 15's aggregate numbers) showed the *metadata-filtered* pair (`metadata_hybrid` vs `metadata_hybrid_reranked`) barely regressed at all — it actually **improved** (0.760→0.829, one query even went from a miss to a hit). The real Section 15 regression (76.0%→64.4%) lives in the **unfiltered** pair (`hybrid` vs `hybrid_reranked`), which the category had never actually compared. Fixed by running both pairs side by side, which surfaced a genuinely valuable, non-obvious finding (below) rather than just a corrected number.
+
+### Findings, by category
+
+**1. BM25 keyword collisions:** 0 genuine cases among single-target queries (see Error 1 above) — the pattern exists but only on qualitative queries, captured in category 5.
+
+**2. Retrieval-depth misses:** 11/36 single-target queries (30.6%) never appear anywhere in the top-50 candidate pool for any Step 5 system — a retrieval failure no reranker can fix. By source: WildReceipt 7/20 (35%), SROIE 2/14 (14%), **CORD 2/2 (100%)** — every single CORD factual query missed entirely. Plausible cause: CORD amount-lookup queries anchor on `doc_id` (per `build_eval_queries.py`, since CORD has no vendor/date to anchor on instead), which carries no natural-language signal for either dense or lexical retrieval to match against.
+
+**3. Metadata-quality-erosion masking:** of the 14 filtered queries, 12 are byte-identical between Ground Truth and Transformer metadata. Directly cross-referenced against the Transformer's actual per-chunk vendor extraction accuracy for each query's full vendor cluster (not the sparse ~5-sample illustrative mismatch list) — the sampled vendors (GERBANG ALAF, AEON, 7-ELEVEN, etc.) show **100% cluster-level extraction accuracy**, confirming directly, not just inferring, that this eval slice happens to sample vendors the Transformer gets right every time.
+
+**4. Reranker cluster-breaking — the corrected, more interesting version:** 5 genuine regressions found in the **unfiltered** pair (concrete example: the "7-ELEVEN" query lost 2 correct cluster members, replaced by a `DinTaiFungRestaurant` chunk and two CORD chunks with no vendor field at all). Only 1 regression in the **metadata-filtered** pair, and that one is mostly the labeling-gap artifact from Error 2. **Key finding:** metadata filtering appears to *protect* reranking from cluster-breaking, by removing off-vendor candidates before the cross-encoder ever sees them — not an independent, unrelated benefit, but a mechanistic interaction between the two techniques worth carrying into any future write-up.
+
+**5. Semantic-paraphrase (type D) qualitative review:** confirms the Section 12 pattern directly and visibly — for "receipt for refueling a car," dense retrieval's top-3 are genuine fuel/gas receipts (Shell, Hidden Tax oil), while BM25's top-3 are all car washes (lexically matching "car" via literal transaction-ID tokens like "Car#304"). Hybrid inherits BM25's car-wash bias in its own top-3, confirming the car-wash keyword collision propagates into hybrid fusion exactly as Section 12 described.
+
+**6. Negation/absence (type E) structural cap:** confirmed, not re-investigated — every system recovers at most 3/1000 CORD chunks (0.3% recall) for both negation queries, consistent with "no retriever has a native way to search for absence."
+
+**Per-source breakdown:** CORD underperforms every other source across every system (0% hit@10 on its 2 single-target queries, consistent with category 2's finding). SROIE responds unusually well to BM25 specifically (78.6% hit@10 vs. 57.1% for hybrid) — SROIE's structured OCR format apparently gives BM25 unusually strong literal signal.
+
+**Field coverage — a real, explicit gap:** **no query in the current set uses `date` or `amount` as a metadata filter — only `vendor`.** This means the metadata-quality linkage table (Section 14) can only ever speak to vendor-filter quality. AMOUNT has the *worst* extraction F1 of the three fields (61.3% fuzzy) but the linkage table cannot show whether amount-extraction errors erode retrieval at all, since no filter type exercises it. The "no separation between GT and Transformer" finding is specifically a vendor-filter finding and should not be read as "metadata quality doesn't matter" for the worst-performing field — a genuine scope limitation of the current eval, not a project conclusion.
+
+Full report (all examples, evidence, and per-category data): `data/eval/error_analysis_report.json` (gitignored, regenerable).
+
+**STEP 6 — COMPLETE.** Purely additive, zero disruption to any of Steps 4-5's 10 logs (verified before and after). Three real classification errors caught and fixed during the pilot spot-check before the full report was trusted — the same "verify before trusting" discipline used throughout this project. The corrected Category 4 finding (metadata filtering protects reranking from cluster-breaking) and the field-coverage gap (linkage table only ever tested vendor, never the worst-performing field) are the two most consequential findings for future work.
 
 ---
