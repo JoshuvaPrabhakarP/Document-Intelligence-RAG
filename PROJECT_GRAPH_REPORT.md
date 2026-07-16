@@ -24,9 +24,9 @@
 | Step | Name | Status |
 |---|---|---|
 | 0 | Environment & data prep | ✅ Complete |
-| 1 | Vector-only baseline + structured logging | 🔶 Ready to start |
-| 2 | BM25 + hybrid fusion | ⏳ Not started |
-| 3 | Dual-track metadata layer (GT / Transformer) | ⏳ Not started |
+| 1 | Vector-only baseline + structured logging | ✅ Complete |
+| 2 | BM25 + hybrid fusion | ✅ Complete |
+| 3 | Dual-track metadata layer (GT / Transformer) | ✅ Complete |
 | 4 | Core 5×2 eval matrix (objective + Ragas) | ✅ Complete |
 | 5 | Reranker ablation (quarantined) | ✅ Complete |
 | 6 | Error analysis (from logs, no re-running) | ✅ Complete |
@@ -79,11 +79,13 @@ Output files: `data/rag_corpus/{wildreceipt,sroie,cord}.jsonl` (gitignored, rege
 - Best Transformer: **seed456, test entity-F1 0.6303**, CRF-enabled (`use_crf: True`), matches "Round 3" from the extraction project
 - `best.pt` = raw model `state_dict` (no optimizer state), CRF layer included since it's part of the model itself
 - Loading code: `app_gradio/inference.py::load_model()` is **directly reusable** — builds from `configs/experiment.yaml` + `load_checkpoint()`, just needs `PROJECT_ROOT` adjusted if copied into the new repo
-- Only the Transformer checkpoint is needed to start (Step 1-4). Mamba/Hybrid checkpoints needed later, only for the linkage table (Section 6 below) — gated on the gcc issue (Section 5).
+- Only the Transformer checkpoint was needed to start (Steps 1-4). Mamba/Hybrid checkpoints are needed later, only for the full linkage table (Section 8) — **no longer gated on anything**: the gcc question (Section 5) was resolved, Mamba/Hybrid checkpoints are confirmed usable now, they just haven't been run over the corpus for this purpose yet.
 
 ---
 
-## 5. Environment — mostly resolved, one open risk
+## 5. Environment — RESOLVED
+
+> **Historical note:** the component table below is a pre-flight snapshot taken *before* Step 0 executed the install list (Section 6). Every "not yet" item in it was resolved during Step 0 — see the updated State column and Section 9's gating checklist for final confirmation. Left in place (not deleted) as the historical record of what was still open at that point.
 
 **Architecture decision (locked):** Two fully separate venvs, communicating only via files on disk — no shared dependencies, no risk of the fragile Mamba/CUDA stack being destabilized by new installs.
 
@@ -95,10 +97,10 @@ Output files: `data/rag_corpus/{wildreceipt,sroie,cord}.jsonl` (gitignored, rege
 |---|---|
 | GPU | RTX 5060 Laptop, 8GB VRAM, confirmed working |
 | CUDA | 12.8, `torch==2.7.0+cu128` (old venv only), `cuda.is_available()` = True |
-| gcc | **13.3.0** — extraction project's install notes specified gcc-11 for Mamba's CUDA kernels. Not yet re-verified. Only matters for the old venv / Mamba-Hybrid checkpoints. |
-| New venv | Not yet created — commands drafted, not yet run |
-| Ollama / vLLM / llama.cpp | Not installed — system-level install, shared across venvs (not a pip package) |
-| FAISS / sentence-transformers / rank_bm25 / llama-index / ragas / FlagEmbedding | Not installed — new venv install list finalized (Section 6) |
+| gcc | **13.3.0** — extraction project's install notes specified gcc-11 for Mamba's CUDA kernels. **Re-verified below: RESOLVED** — the `mamba_ssm` smoke test passed regardless, since the compiled kernels didn't need rebuilding. |
+| New venv | **RESOLVED — created** (`~/document-intelligence-rag/venv`, Python 3.12; see Section 9). |
+| Ollama / vLLM / llama.cpp | **RESOLVED — Ollama installed** system-wide and in active use since Step 4 (Qwen 3 8B, via its OpenAI-compatible endpoint). vLLM/llama.cpp were never needed once Ollama was chosen. |
+| FAISS / sentence-transformers / rank_bm25 / llama-index / ragas / FlagEmbedding | **RESOLVED — all installed**, confirmed versions in Section 6. |
 | Local LLM choice | **RESOLVED: Qwen 3 (8B), via Ollama** |
 | VRAM budget / LLM placement | **RESOLVED: CPU via Ollama.** Extractor + BGE-large stay on GPU (small, run frequently during indexing/queries); LLM runs on CPU since generation only happens during the eval/answer step, not every indexing iteration — accepts slower generation in exchange for zero VRAM contention and simpler setup (no quantize/swap logic needed). Ollama installed system-wide, shared across both venvs (not a pip package). |
 
@@ -145,7 +147,7 @@ Ran inside the **new venv only** (`~/document-intelligence-rag/venv`). Old venv 
 
 ---
 
-## 7. Untriaged files — open question
+## 7. Untriaged files — RESOLVED
 
 **RESOLVED.** Findings from inspection (`diff -rq app/ app_gradio/`): `app/` is the original Streamlit dashboard draft (has `dashboard.py`), deliberately superseded by the Gradio rebuild in `app_gradio/` (has `app.py` + `theme.py` instead) — matches the session log's documented rebuild. Neither dashboard is needed for this project; only `app_gradio/inference.py::load_model()` matters (already confirmed reusable, Section 4).
 
