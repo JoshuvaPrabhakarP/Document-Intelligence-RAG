@@ -88,6 +88,7 @@ def build_chunk(record, source, chunk_idx):
         "doc_id": record.get("doc_id"),
         "source": source,
         "text": text,
+        "tokens": tokens,  # kept for Step 3b: feeding the Transformer checkpoint
         "char_len": len(text),
         "word_len": len(tokens),
         "ground_truth": gt,
@@ -118,6 +119,13 @@ def main():
             f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
 
     print(f"\nWrote {len(all_chunks)} chunks -> {args.out}")
+
+    if not all_chunks:
+        print("\nERROR: No chunks were produced — check that --corpus-dir "
+              "points at the directory containing wildreceipt.jsonl, "
+              "sroie.jsonl, and cord.jsonl (data/rag_corpus/ in the "
+              "document-intelligence-rag repo, not the old extraction repo).")
+        return
 
     # quick sanity stats
     with_vendor = sum(1 for c in all_chunks if c["ground_truth"]["vendor"])

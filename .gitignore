@@ -6,6 +6,10 @@ __pycache__/
 data/raw/
 data/rag_corpus/
 data/processed/
+data/chunks/
+data/index/
+data/metadata/
+data/eval/
 
 # indices/embeddings — regenerable, often large
 *.faiss
