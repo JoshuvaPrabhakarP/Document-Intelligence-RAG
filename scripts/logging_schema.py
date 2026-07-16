@@ -47,6 +47,9 @@ VALID_SYSTEMS = {
     "hybrid",
     "metadata_vector",
     "metadata_hybrid",
+    # Step 5 reranker ablation — additive only, nothing above changed/removed
+    "hybrid_reranked",
+    "metadata_hybrid_reranked",
 }
 VALID_METADATA_SOURCES = {"none", "ground_truth", "transformer"}
 VALID_QUESTION_TYPES = {"A", "B", "C", "D", "E"}  # per scope doc taxonomy

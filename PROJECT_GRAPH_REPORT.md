@@ -5,7 +5,7 @@
 
 **Prior project (asset source only):** `github.com/JoshuvaPrabhakarP/hybrid-doc-extractor` (its Phases 1-8, complete)
 **This project:** repo created and live — `github.com/JoshuvaPrabhakarP/Document-Intelligence-RAG`
-**Current stage:** This project's Phase 1, Step 0 — COMPLETE. Ready to begin Step 1.
+**Current stage:** This project's Phase 1, Steps 0-5 — COMPLETE. Ready to begin Step 6 (error analysis).
 
 ---
 
@@ -28,7 +28,7 @@
 | 2 | BM25 + hybrid fusion | ⏳ Not started |
 | 3 | Dual-track metadata layer (GT / Transformer) | ⏳ Not started |
 | 4 | Core 5×2 eval matrix (objective + Ragas) | ✅ Complete |
-| 5 | Reranker ablation (quarantined, best-config only) | ⏳ Not started |
+| 5 | Reranker ablation (quarantined) | ✅ Complete |
 | 6 | Error analysis (from logs, no re-running) | ⏳ Not started |
 | 7 | README + write-up | ⏳ Not started |
 | 8 | Deployment (FastAPI → Gradio → Cloudflare Tunnel) | ⏳ Not started |
@@ -195,9 +195,9 @@ Recall@10 is **identical** between Ground Truth and Transformer despite the Tran
 
 ## 10. Next immediate action (as of this update)
 
-**Steps 0-4 are all complete.** Step 4's core 5×2 matrix ran end-to-end (objective metrics fully trustworthy; Ragas partially trustworthy — see Section 14 for the honest breakdown).
+**Steps 0-5 are all complete.** Step 4's core 5×2 matrix ran end-to-end (objective metrics fully trustworthy; Ragas partially trustworthy — see Section 14). Step 5's reranker ablation ran cleanly against 3 new system-runs with zero disruption to any of Step 4's 7 logs — see Section 15 for the full, honest (mixed) verdict.
 
-Next: **Step 5 — Reranker ablation** (quarantined, best-config only, per the original design).
+Next: **Step 6 — Error analysis** (from logs, no re-running, per the original design).
 
 ---
 
@@ -402,5 +402,38 @@ Full report (including failure counts per metric): `data/eval/ragas_report.json`
 **STEP 4 — COMPLETE.** Objective metrics (Recall@10/MRR, the linkage table) are fully trustworthy and answer RQ1-3 directly. Ragas is partially trustworthy by explicit, documented decision (AnswerRelevancy/ContextPrecision usable; Faithfulness/ContextRecall are a known, real limitation of judging with a small local LLM, not silently swept under an aggregate number). Three real bugs fixed along the way (metadata_filters_applied mislabeling, hybrid pool_size confound, Ragas RunConfig timeout) plus two query-set bugs (ambiguous anchors, degenerate min-amount) — six more real bugs added to this project's running total.
 
 ---
+
+## 15. Step 5 progress — Reranker ablation (quarantined)
+
+Scripts: `scripts/rerank.py` (the reranker), `scripts/run_reranker_ablation.py` (harness), `scripts/score_reranker_ablation.py` (scoring). Fully additive — the only shared file touched was `scripts/logging_schema.py` (2 new entries added to `VALID_SYSTEMS`, nothing existing removed; its own self-test re-verified afterward). All 7 of Step 4's log files confirmed byte-identical in line count before and after every run in this step (both the harness's own built-in check and an independent post-hoc diff).
+
+**Reranker:** `BAAI/bge-reranker-large`, decided back in Step 0. Candidate pool: top-50 per query (from the same, unmodified `HybridRetriever`/`MetadataRetriever` classes), reranked, scored against a top-10 truncation for direct comparability with Step 4. Four variants: Hybrid baseline (Step 4's existing `hybrid__none`, read-only reference, not rerun), Hybrid+reranker, Metadata Hybrid+reranker (ground truth), Metadata Hybrid+reranker (Transformer). Retrieval-side objective metrics and latency only — no LLM generation or Ragas, per explicit scope decision.
+
+### Two real bugs found and fixed during this step
+
+**Bug 1 — `FlagEmbedding` incompatible with the installed `transformers` version.** The reranker self-test failed immediately: `AttributeError: XLMRobertaTokenizer has no attribute prepare_for_model`. Diagnosed rather than assumed: `FlagEmbedding` 1.4.0 (already the latest release — no upgrade path exists) calls a tokenizer method that transformers 5.13.0 (installed in this venv) has removed entirely. Downgrading transformers to chase FlagEmbedding's older expected API was rejected as too risky — it could destabilize the entire already-working retrieval stack (sentence-transformers/embeddings all currently depend on 5.13.0), the same class of risk that caused the original ragas/langchain-community saga in Step 0. **Fixed** by loading `bge-reranker-large` directly via `transformers`'s standard `AutoTokenizer`/`AutoModelForSequenceClassification` interface instead of `FlagEmbedding`'s wrapper — this is itself the documented, official alternative usage pattern for BGE reranker models, not a workaround. Verified via the reranker self-test (car-wash-vs-fuel-station case from Step 2/Section 12): the reranker demoted false-positive car-wash matches and promoted the genuine Shell fuel-station receipt — a real, sensible reordering, not just "ran without error."
+
+**Bug 2 — the exact pool_size confound from Step 4, reintroduced.** First full scoring pass showed `hybrid_reranked` and `metadata_hybrid_reranked` at nearly-but-not-quite the same numbers. Investigated before trusting it: the harness's `hybrid_reranked` branch called `HybridRetriever.search(k=50, pool_size=50)`, while `metadata_hybrid_reranked` relied on `MetadataRetriever`'s own default `pool_size=100` — the same underlying-RRF-fusion-pool mismatch Step 4 already found and fixed once, reintroduced here by not matching it explicitly. Fixed by setting `pool_size=100` for `hybrid_reranked` too (keeping `k=50` as the separate, intentional "how many fused results reach the reranker" knob), then re-ran just that one affected system-run and reconfirmed Step 4's logs were still untouched. In this instance the fix changed the numbers only marginally (0.613→0.618 MRR) — but the check mattered regardless of how much it moved the number, same as every other verification step in this project.
+
+### Results
+
+| Variant | Hit@10 | MRR | Filtered Recall@10 | Filtered Precision@10 | Small-set Recall@10 | Small-set Precision@10 |
+|---|---|---|---|---|---|---|
+| Hybrid baseline (Step 4) | 0.556 | 0.385 | 0.764 | 0.823 | 0.760 | 0.636 |
+| Hybrid + reranker | 0.694 | 0.618 | — (no filters applied) | — | 0.644 | 0.529 |
+| Metadata Hybrid + reranker (GT) | 0.694 | 0.618 | 0.829 | 0.815 | 0.829 | 0.815 |
+| Metadata Hybrid + reranker (Transformer) | 0.694 | 0.618 | 0.829 | 0.811 | 0.829 | 0.811 |
+
+**Rank movement (single-target queries, n=36):** the target chunk existed somewhere in the top-50 pool for 25/36 queries — reranking promoted **all 25 of them** into the final top-10 (mean movement +4.8 ranks among those recovered). The remaining 11/36 were never in the top-50 pool at all — a retrieval-depth miss no amount of reranking can fix, since reranking only re-orders what retrieval already found.
+
+**Honest, mixed verdict — not a uniform win:**
+- **Real improvement** on single-target factual-lookup queries: Hit@10 +0.138, MRR +0.233. The reranker reliably promotes the correct chunk into the top-10 whenever the base retriever's top-50 already contains it.
+- **Real improvement** on metadata-filtered queries: Recall@10 76.4%→82.9%, both metadata sources. (Ground Truth and Transformer remain nearly indistinguishable here — Step 4's finding that this specific filtered-query slice doesn't strongly separate metadata quality still holds after reranking.)
+- **Real regression** on unfiltered multi-target "small-set" queries (e.g. "show me receipts from vendor X"): Recall@10 76.0%→64.4%, Precision@10 63.6%→52.9%. Plausible explanation, not chased further here: a cross-encoder scores one passage against the query at a time and has no notion that "this whole cluster of same-vendor receipts should rank together" — RRF fusion, on a query that lexically matches the vendor name, apparently preserves that clustering better than reranking does. Worth a closer look in Step 6's error analysis, not something to re-engineer here (quarantined scope).
+- **Latency cost:** reranking adds ~3.8-4.7s/query on top of ~0.06-0.07s of retrieval — the reranker is the dominant cost by roughly two orders of magnitude. A real, material latency trade-off for the Hit@10/MRR and filtered-recall gains above.
+
+Full report: `data/eval/reranker_ablation_report.json` (gitignored, regenerable).
+
+**STEP 5 — COMPLETE.** Two real bugs found and fixed (a library/framework incompatibility, and a reintroduced pool_size confound). Result is a genuine, reportable mixed finding — reranking helps single-target and metadata-filtered retrieval meaningfully, but measurably hurts unfiltered multi-target queries, at a non-trivial latency cost. All of Step 4's baselines and logs remain fully intact and unmodified throughout.
 
 ---
