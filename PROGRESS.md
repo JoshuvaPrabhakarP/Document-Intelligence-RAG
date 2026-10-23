@@ -130,12 +130,17 @@ Plus: `app/main.py` gained `/upload`, `/session` (GET/DELETE), session-cookie ha
 
 **Retrieval (`fusion.py`) and generation (`llm_client.py`/`ollama_provider.py`) are reused exactly as before — zero changes.** The one genuinely new piece is `indexing.py`: `embed_index.py` is a CLI-only script with no reusable function, and shelling out to it per upload would force a ~13s cold model-load on every single file. `indexing.py` follows its exact pattern (same model, same `IndexFlatIP`, same `metadata.jsonl`/`index_config.json` shape) but keeps one embedding model warm across uploads instead.
 
-### A real blocker, handled transparently
+### A real blocker, resolved
 
-This sandbox has no passwordless `sudo`, so I could not install the system `tesseract-ocr` package myself. **You ran the install yourself** (per your choice when asked) while I built everything else in parallel. Until it's confirmed installed:
-- PDF embedded-text extraction works fully and was verified end-to-end (see below) — most PDFs have a text layer and don't need OCR at all.
-- Image uploads and scanned PDF pages correctly return a clean `503` with the message *"OCR engine (tesseract) is not installed on the server..."* rather than crashing — this error path was verified for real, not assumed.
-- **OCR extraction accuracy itself has not been verified end-to-end** — that's the one remaining unverified claim in this milestone. Once tesseract is confirmed installed (`which tesseract`), re-upload a JPG/PNG to confirm.
+This sandbox has no passwordless `sudo`, so I could not install the system `tesseract-ocr` package myself. **You ran the install yourself** (per your choice when asked) while everything else was built in parallel. Now resolved and fully re-verified:
+- `tesseract --version` confirms **5.3.4** installed.
+- Before testing through the app, ran tesseract directly on a synthetic test receipt image to confirm it reads cleanly in isolation.
+- **Uploaded that image through the actual running API**: OCR ran (`used_ocr: true`), extracted text matched the raw tesseract output exactly ("OCR TEST DINER... TOTAL 19.00").
+- **Asked a question requiring the OCR'd values** ("What is the total... and what did they order?") → correct answer ("$19.00 for a Burger, Fries, and Soda"), correct source citation (filename + matching excerpt), `has_sufficient_evidence: true`.
+- PDF embedded-text extraction (no OCR needed) was already verified separately — most real PDFs have a text layer.
+- The graceful-degradation path (clean 503 when OCR is unavailable) was verified earlier, before tesseract was installed, and remains in place as the fallback if OCR is ever unavailable again.
+
+**The full upload → OCR → indexing → question → cited answer path is now genuinely verified end-to-end, not assumed.**
 
 ### Resource decision: upload's embedding model runs on CPU, not GPU
 
@@ -190,11 +195,10 @@ pytest tests/ -v
 
 ### New dependencies
 
-`pymupdf` (PDF text extraction + page rasterization), `pytesseract` (OCR wrapper), `python-multipart` (FastAPI file-upload support) — all free, local, pip-only. System `tesseract-ocr` package — free, local, requires `sudo apt-get install -y tesseract-ocr` (pending, see above).
+`pymupdf` (PDF text extraction + page rasterization), `pytesseract` (OCR wrapper), `python-multipart` (FastAPI file-upload support) — all free, local, pip-only. System `tesseract-ocr` 5.3.4 — free, local, now installed and verified.
 
 ### Known limitations
 
-- **OCR accuracy unverified** (blocked on the pending tesseract install, see above).
 - **No incremental indexing** — every new upload in a session rebuilds the whole session index from scratch. Fine at session scale (a handful of receipts), would not scale to many files per session.
 - **Lazy expiry only** — sessions are swept on access, not by a background timer. A session that's never touched again after upload stays on disk until *something* triggers a sweep (the next request to this server, from anyone). Acceptable for a demo; a production deployment would want a periodic sweep task too.
 - **CPU-only embedding for uploads** is a deliberate VRAM-safety tradeoff (see above), not a sign CPU is required — it's simply slower than the GPU-backed demo pipeline.
