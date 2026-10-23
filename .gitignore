@@ -19,5 +19,9 @@ embeddings/
 # logs from eval runs
 logs/*.jsonl
 
+# demo index — regenerable via demo_data/build_synthetic_demo_corpus.py +
+# embed_index.py; demo_chunks.jsonl itself IS committed (small, synthetic, public)
+demo_data/index/
+
 # local env
 .env

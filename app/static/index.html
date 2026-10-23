@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Document Intelligence RAG — Demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  .banner { background: #fff8e1; border: 1px solid #f0d878; border-radius: 8px; padding: 12px 16px; font-size: 0.9rem; margin-bottom: 20px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 60px; font-size: 1rem; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+  button { margin-top: 8px; padding: 8px 16px; font-size: 0.95rem; border-radius: 6px; border: none; background: #2563eb; color: white; cursor: pointer; }
+  button:disabled { background: #93c5fd; cursor: not-allowed; }
+  .samples { margin: 10px 0 20px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .samples button { background: #eef2ff; color: #1e3a8a; font-size: 0.82rem; padding: 5px 10px; }
+  #result { margin-top: 20px; }
+  .answer { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px; }
+  .answer.no-evidence { background: #fef2f2; border-color: #fecaca; }
+  .error { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 14px; color: #991b1b; }
+  .source { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin-top: 8px; font-size: 0.85rem; }
+  .source-meta { color: #64748b; font-size: 0.78rem; margin-bottom: 4px; }
+  .loading { color: #64748b; font-style: italic; }
+  .latency { color: #94a3b8; font-size: 0.78rem; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h1>Document Intelligence RAG — Demo</h1>
+  <div class="banner" id="config-banner">Loading configuration…</div>
+
+  <textarea id="question" placeholder="Ask a question about the demo receipts…"></textarea><br>
+  <button id="ask-btn" onclick="ask()">Ask</button>
+
+  <div class="samples" id="samples"></div>
+
+  <div id="result"></div>
+
+<script>
+async function loadSamples() {
+  const res = await fetch('/sample-questions');
+  const data = await res.json();
+  document.getElementById('config-banner').textContent =
+    data.config === 'demo'
+      ? 'Demo mode: answers are grounded in synthetic sample receipts only (not the real research corpus). See PROGRESS.md for why.'
+      : 'Research mode.';
+  const container = document.getElementById('samples');
+  data.questions.forEach(q => {
+    const btn = document.createElement('button');
+    btn.textContent = q;
+    btn.onclick = () => { document.getElementById('question').value = q; ask(); };
+    container.appendChild(btn);
+  });
+}
+
+async function ask() {
+  const question = document.getElementById('question').value.trim();
+  const resultDiv = document.getElementById('result');
+  const askBtn = document.getElementById('ask-btn');
+  if (!question) return;
+
+  askBtn.disabled = true;
+  resultDiv.innerHTML = '<p class="loading">Retrieving and generating an answer…</p>';
+
+  try {
+    const res = await fetch('/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, top_k: 5 }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      resultDiv.innerHTML = `<div class="error">Request failed (${res.status}): ${err.detail || 'unknown error'}</div>`;
+      return;
+    }
+
+    const data = await res.json();
+
+    if (data.error) {
+      resultDiv.innerHTML = `<div class="error">Generation failed: ${data.error}</div>`;
+      return;
+    }
+
+    const evidenceClass = data.has_sufficient_evidence === false ? 'no-evidence' : '';
+    let html = `<div class="answer ${evidenceClass}"><strong>Answer:</strong> ${escapeHtml(data.answer)}</div>`;
+
+    if (data.sources && data.sources.length) {
+      html += '<div><strong style="font-size:0.85rem;">Sources:</strong></div>';
+      data.sources.forEach(s => {
+        html += `<div class="source"><div class="source-meta">${s.chunk_id} · ${s.source} · score ${s.score.toFixed(3)}</div>${escapeHtml(s.excerpt)}…</div>`;
+      });
+    }
+
+    html += `<div class="latency">retrieval ${data.retrieval_latency_ms.toFixed(0)}ms` +
+      (data.rerank_latency_ms ? ` · rerank ${data.rerank_latency_ms.toFixed(0)}ms` : '') +
+      (data.generation_latency_ms ? ` · generation ${data.generation_latency_ms.toFixed(0)}ms` : '') +
+      '</div>';
+
+    resultDiv.innerHTML = html;
+  } catch (e) {
+    resultDiv.innerHTML = `<div class="error">Network error: ${escapeHtml(e.message)}. Is the server running?</div>`;
+  } finally {
+    askBtn.disabled = false;
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+loadSamples().catch(e => {
+  document.getElementById('config-banner').textContent = 'Could not reach the API — is the server running?';
+});
+</script>
+</body>
+</html>

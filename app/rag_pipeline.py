@@ -1,0 +1,128 @@
+"""
+Wraps the EXISTING, UNMODIFIED retrieval/rerank/generation research code
+into the one callable the API layer uses. No retrieval or reranking logic
+is reimplemented here — this is purely composition:
+  - scripts/fusion.py::HybridRetriever   (dense + BM25 + RRF, Step 2)
+  - scripts/rerank.py::Reranker          (bge-reranker-large, Step 5)
+  - app/generation/*                     (this milestone's new code)
+
+"Insufficient evidence" detection reuses the EXISTING prompt instruction
+(scripts/llm_client.py's build_prompt already tells the model to say
+"I don't know" when the context doesn't contain the answer) rather than
+inventing a new, unvalidated numeric confidence threshold — no such
+threshold was established anywhere in the Step 4/5 research, so a fresh
+one here would be a guess dressed up as a metric.
+"""
+
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+from fusion import HybridRetriever  # noqa: E402
+from rerank import Reranker  # noqa: E402
+
+from app.generation import GenerationError, get_provider
+
+
+class RAGPipeline:
+    def __init__(self, settings):
+        self.settings = settings
+        self._retriever = None
+        self._reranker = None
+        self._provider = None
+
+    # Lazy-loaded so object construction (used by health checks) is instant;
+    # the first real query pays the model-loading cost, matching the
+    # cold-start behavior already measured and documented in PROGRESS.md.
+    @property
+    def retriever(self):
+        if self._retriever is None:
+            self._retriever = HybridRetriever(
+                index_dir=self.settings.index_dir, chunks_path=self.settings.chunks_path
+            )
+        return self._retriever
+
+    @property
+    def reranker(self):
+        if self._reranker is None and self.settings.use_reranker:
+            self._reranker = Reranker(model_name=self.settings.reranker_model)
+        return self._reranker
+
+    @property
+    def provider(self):
+        if self._provider is None:
+            self._provider = get_provider(self.settings)
+        return self._provider
+
+    def is_loaded(self) -> dict:
+        """For the readiness endpoint — reports what's actually loaded in
+        memory right now, without forcing a load."""
+        return {
+            "retriever_loaded": self._retriever is not None,
+            "reranker_loaded": self._reranker is not None,
+            "provider_configured": self._provider is not None,
+        }
+
+    def answer(self, question: str, top_k: int | None = None, use_reranker: bool | None = None):
+        top_k = top_k or self.settings.top_k
+        use_rerank = self.settings.use_reranker if use_reranker is None else use_reranker
+
+        t0 = time.monotonic()
+        pool = self.retriever.search(question, k=self.settings.retrieval_pool_size, pool_size=100)
+        retrieval_ms = (time.monotonic() - t0) * 1000
+
+        rerank_ms = None
+        if use_rerank and pool:
+            t0 = time.monotonic()
+            pool, rerank_ms = self.reranker.rerank(question, pool)
+        results = pool[:top_k]
+
+        if not results:
+            return {
+                "answer": "I don't have any relevant documents to answer that question.",
+                "sources": [],
+                "has_sufficient_evidence": False,
+                "retrieval_latency_ms": retrieval_ms,
+                "rerank_latency_ms": rerank_ms,
+                "generation_latency_ms": None,
+            }
+
+        try:
+            answer, generation_ms = self.provider.generate(question, results)
+        except GenerationError as exc:
+            return {
+                "answer": None,
+                "sources": self._format_sources(results),
+                "has_sufficient_evidence": None,
+                "retrieval_latency_ms": retrieval_ms,
+                "rerank_latency_ms": rerank_ms,
+                "generation_latency_ms": None,
+                "error": str(exc),
+            }
+
+        # Reuses the model's own grounded "I don't know" response (see
+        # module docstring) rather than a fabricated confidence score.
+        has_evidence = "i don't know" not in answer.strip().lower()
+
+        return {
+            "answer": answer,
+            "sources": self._format_sources(results),
+            "has_sufficient_evidence": has_evidence,
+            "retrieval_latency_ms": retrieval_ms,
+            "rerank_latency_ms": rerank_ms,
+            "generation_latency_ms": generation_ms,
+        }
+
+    @staticmethod
+    def _format_sources(results):
+        return [
+            {
+                "chunk_id": r["chunk_id"],
+                "source": r["source"],
+                "score": r.get("rerank_score", r.get("score")),
+                "excerpt": r["text"][:200],
+            }
+            for r in results
+        ]
