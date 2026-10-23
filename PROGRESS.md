@@ -112,3 +112,95 @@ Modified: `.gitignore` (added `demo_data/index/`).
 Untouched: every file under `scripts/`, all research data, `PROJECT_GRAPH_REPORT.md`, `README.md`.
 
 **Not started: LangGraph (Milestone 3), Docker/CI/deployment (Milestone 5), documentation of a public URL (Milestone 6) — per scope, paused here.**
+
+## Milestone 2 extension — Upload your own receipt (complete)
+
+Adds a second, fully isolated mode to the same application: upload a real JPG/PNG/PDF receipt and ask questions about it, without touching the research pipeline or its evaluation claims.
+
+### What was built
+
+```
+app/upload/
+├── extraction.py       # PDF text-layer + OCR fallback (PyMuPDF + Tesseract), timeout-wrapped
+├── session.py           # SessionManager — per-browser-session storage, lazy TTL expiry
+├── indexing.py          # builds a session-scoped FAISS+BM25 index (new code — see why below)
+└── retriever_cache.py   # caches one HybridRetriever (UNMODIFIED scripts/fusion.py) per session
+```
+Plus: `app/main.py` gained `/upload`, `/session` (GET/DELETE), session-cookie handling, and a `mode` field on `/query`; `app/rag_pipeline.py` gained `answer_from_retriever()` (same rerank/generate/format logic as `answer()`, parameterized by retriever — this is how upload mode reuses generation without reimplementing it); `app/static/index.html` gained a mode tab, upload control, extracted-text panel, and "Clear uploaded receipts."
+
+**Retrieval (`fusion.py`) and generation (`llm_client.py`/`ollama_provider.py`) are reused exactly as before — zero changes.** The one genuinely new piece is `indexing.py`: `embed_index.py` is a CLI-only script with no reusable function, and shelling out to it per upload would force a ~13s cold model-load on every single file. `indexing.py` follows its exact pattern (same model, same `IndexFlatIP`, same `metadata.jsonl`/`index_config.json` shape) but keeps one embedding model warm across uploads instead.
+
+### A real blocker, handled transparently
+
+This sandbox has no passwordless `sudo`, so I could not install the system `tesseract-ocr` package myself. **You ran the install yourself** (per your choice when asked) while I built everything else in parallel. Until it's confirmed installed:
+- PDF embedded-text extraction works fully and was verified end-to-end (see below) — most PDFs have a text layer and don't need OCR at all.
+- Image uploads and scanned PDF pages correctly return a clean `503` with the message *"OCR engine (tesseract) is not installed on the server..."* rather than crashing — this error path was verified for real, not assumed.
+- **OCR extraction accuracy itself has not been verified end-to-end** — that's the one remaining unverified claim in this milestone. Once tesseract is confirmed installed (`which tesseract`), re-upload a JPG/PNG to confirm.
+
+### Resource decision: upload's embedding model runs on CPU, not GPU
+
+Demo mode's retriever (GPU, ~1.3GB VRAM) + reranker (GPU, ~2.2GB) + Qwen3 8B via Ollama (~5.2GB) already approach this machine's 8GB VRAM. Loading a *second* GPU copy of the embedding model for uploads risked exceeding it. Measured earlier (Milestone 1/2): CPU embedding costs ~468ms for a short query — negligible for a one-time per-upload indexing step, so `UPLOAD_EMBEDDING_DEVICE=cpu` by default, configurable.
+
+### Session isolation — how it actually holds, not just claimed
+
+- Session ID is an opaque, server-generated UUID in an HTTP-only cookie — the client never supplies or influences it.
+- Each session's chunks/index live in their own directory under `/tmp/doc-rag-uploads/{session_id}/`, **outside the git repo entirely** (not just gitignored — never inside the project directory at all, so there's no rule to maintain or forget).
+- `mode="upload"` queries build their retriever from `sessions.index_dir(session_id)` — there is no code path from there back to the demo/research corpus.
+- `mode="demo"` queries never touch session storage at all, even if the same browser has uploaded files.
+
+**Verified for real, not just unit-tested** (see commands below): a request with no session cookie gets a clean 400 ("No receipts uploaded"), not another session's data. A same-session query in `demo` mode answered from the synthetic corpus only, correctly ignoring an uploaded receipt that WAS in that session.
+
+### Verification — commands actually run, with real output
+
+```bash
+# PDF with embedded text (generated on the fly with PyMuPDF, not a real receipt scan)
+curl -X POST http://127.0.0.1:8000/upload -F "file=@test_receipt.pdf;type=application/pdf"
+# -> page_count: 1, chunks_indexed: 1, text correctly extracted, used_ocr: false
+
+curl -X POST .../query -d '{"question": "What is the total at Test Coffee Shop?", "mode": "upload"}'
+# -> "The total at Test Coffee Shop is $10.54." (correct), source: test_receipt.pdf (correct)
+
+# session isolation
+curl -X POST .../query -d '{"question": "...", "mode": "upload"}'   # NO cookie sent
+# -> 400 "No receipts uploaded in this session yet."
+
+curl -b cookies.txt -X POST .../query -d '{"question": "...", "mode": "demo"}'  # SAME session, demo mode
+# -> answered from synthetic corpus only (demo_* chunk_ids), upload never leaked in
+
+# missing information
+curl -b cookies.txt -X POST .../query -d '{"question": "How many loyalty points were earned?", "mode": "upload"}'
+# -> "I don't know.", has_sufficient_evidence: false
+
+# validation
+curl -X POST .../upload -F "file=@notes.txt;type=text/plain"      # -> 400 Unsupported file type
+curl -X POST .../upload -F "file=@big.png"  # 11MB                 # -> 413 exceeds 10MB limit
+curl -X POST .../upload -F "file=@receipt.png"  # tesseract absent  # -> 503 clean OCR-unavailable message
+
+# cleanup
+curl -b cookies.txt http://127.0.0.1:8000/session   # files: [test_receipt.pdf], total_chunks: 1
+curl -b cookies.txt -X DELETE http://127.0.0.1:8000/session   # {"cleared": true}
+curl -b cookies.txt http://127.0.0.1:8000/session   # files: [], NEW session_id issued
+ls /tmp/doc-rag-uploads/{old_session_id}   # -> No such file or directory (confirmed physically deleted)
+
+# full test suite
+pytest tests/ -v
+# -> 25 passed (9 new upload tests: valid PDF extraction, 4 invalid-file cases,
+#    cited-answer query, no-upload error, session isolation, deletion)
+```
+
+### New dependencies
+
+`pymupdf` (PDF text extraction + page rasterization), `pytesseract` (OCR wrapper), `python-multipart` (FastAPI file-upload support) — all free, local, pip-only. System `tesseract-ocr` package — free, local, requires `sudo apt-get install -y tesseract-ocr` (pending, see above).
+
+### Known limitations
+
+- **OCR accuracy unverified** (blocked on the pending tesseract install, see above).
+- **No incremental indexing** — every new upload in a session rebuilds the whole session index from scratch. Fine at session scale (a handful of receipts), would not scale to many files per session.
+- **Lazy expiry only** — sessions are swept on access, not by a background timer. A session that's never touched again after upload stays on disk until *something* triggers a sweep (the next request to this server, from anyone). Acceptable for a demo; a production deployment would want a periodic sweep task too.
+- **CPU-only embedding for uploads** is a deliberate VRAM-safety tradeoff (see above), not a sign CPU is required — it's simply slower than the GPU-backed demo pipeline.
+
+### Files changed/added this extension
+
+New: `app/upload/` (5 files), `tests/test_upload.py`.
+Modified: `app/main.py`, `app/rag_pipeline.py`, `app/schemas.py`, `app/config.py`, `.env.example`, `app/static/index.html`, `PROGRESS.md`.
+Untouched: everything under `scripts/`, all research and demo corpus data, `PROJECT_GRAPH_REPORT.md`, `README.md`.

@@ -7,6 +7,10 @@ class QueryRequest(BaseModel):
     use_reranker: bool | None = Field(
         default=None, description="Override the configured default for this request."
     )
+    mode: str = Field(
+        default="demo",
+        description="'demo' (synthetic sample receipts) or 'upload' (this session's uploaded receipts only).",
+    )
 
 
 class SourceReference(BaseModel):
@@ -36,3 +40,34 @@ class ReadinessResponse(BaseModel):
     config: str
     checks: dict[str, bool]
     detail: str | None = None
+
+
+class PageExtraction(BaseModel):
+    page_number: int
+    text: str
+    used_ocr: bool
+    warning: str | None = None
+
+
+class UploadResponse(BaseModel):
+    file_id: str
+    original_filename: str
+    content_type: str
+    page_count: int
+    pages: list[PageExtraction]
+    chunks_indexed: int
+    warning: str | None = None
+
+
+class SessionFileSummary(BaseModel):
+    file_id: str
+    original_filename: str
+    page_count: int
+    extracted_char_count: int
+    warning: str | None = None
+
+
+class SessionResponse(BaseModel):
+    session_id: str
+    files: list[SessionFileSummary]
+    total_chunks: int

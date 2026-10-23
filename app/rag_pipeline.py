@@ -66,12 +66,28 @@ class RAGPipeline:
         }
 
     def answer(self, question: str, top_k: int | None = None, use_reranker: bool | None = None):
-        top_k = top_k or self.settings.top_k
-        use_rerank = self.settings.use_reranker if use_reranker is None else use_reranker
-
+        """Demo/research mode — retrieves from the configured corpus."""
         t0 = time.monotonic()
         pool = self.retriever.search(question, k=self.settings.retrieval_pool_size, pool_size=100)
         retrieval_ms = (time.monotonic() - t0) * 1000
+        return self.answer_from_pool(question, pool, retrieval_ms, top_k, use_reranker)
+
+    def answer_from_retriever(self, question: str, retriever, top_k: int | None = None,
+                               use_reranker: bool | None = None):
+        """Upload mode — same rerank/generate/format logic as answer(), but
+        against a CALLER-SUPPLIED retriever (a session-scoped HybridRetriever
+        from app/upload/retriever_cache.py) instead of the configured
+        demo/research one. This is the actual session-isolation mechanism:
+        there is no code path from here back into self.retriever."""
+        t0 = time.monotonic()
+        pool = retriever.search(question, k=self.settings.retrieval_pool_size, pool_size=100)
+        retrieval_ms = (time.monotonic() - t0) * 1000
+        return self.answer_from_pool(question, pool, retrieval_ms, top_k, use_reranker)
+
+    def answer_from_pool(self, question: str, pool: list, retrieval_ms: float,
+                          top_k: int | None = None, use_reranker: bool | None = None):
+        top_k = top_k or self.settings.top_k
+        use_rerank = self.settings.use_reranker if use_reranker is None else use_reranker
 
         rerank_ms = None
         if use_rerank and pool:

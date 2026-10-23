@@ -5,29 +5,58 @@
 <title>Document Intelligence RAG — Demo</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
   h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; margin-top: 28px; }
   .banner { background: #fff8e1; border: 1px solid #f0d878; border-radius: 8px; padding: 12px 16px; font-size: 0.9rem; margin-bottom: 20px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab { padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc; background: #f8fafc; cursor: pointer; font-size: 0.9rem; }
+  .tab.active { background: #2563eb; color: white; border-color: #2563eb; }
   textarea { width: 100%; box-sizing: border-box; min-height: 60px; font-size: 1rem; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
   button { margin-top: 8px; padding: 8px 16px; font-size: 0.95rem; border-radius: 6px; border: none; background: #2563eb; color: white; cursor: pointer; }
   button:disabled { background: #93c5fd; cursor: not-allowed; }
+  button.secondary { background: #ef4444; }
   .samples { margin: 10px 0 20px; display: flex; flex-wrap: wrap; gap: 6px; }
   .samples button { background: #eef2ff; color: #1e3a8a; font-size: 0.82rem; padding: 5px 10px; }
   #result { margin-top: 20px; }
   .answer { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px; }
   .answer.no-evidence { background: #fef2f2; border-color: #fecaca; }
   .error { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 14px; color: #991b1b; }
+  .warning { background: #fff8e1; border: 1px solid #f0d878; border-radius: 6px; padding: 8px 12px; font-size: 0.82rem; margin-top: 8px; }
   .source { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin-top: 8px; font-size: 0.85rem; }
   .source-meta { color: #64748b; font-size: 0.78rem; margin-bottom: 4px; }
   .loading { color: #64748b; font-style: italic; }
   .latency { color: #94a3b8; font-size: 0.78rem; margin-top: 10px; }
+  .hidden { display: none; }
+  .file-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .file-card summary { cursor: pointer; font-size: 0.9rem; }
+  .file-card pre { white-space: pre-wrap; font-size: 0.8rem; background: #f8fafc; padding: 8px; border-radius: 6px; max-height: 200px; overflow-y: auto; }
+  .upload-box { border: 2px dashed #cbd5e1; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 16px; }
+  .session-note { font-size: 0.8rem; color: #64748b; margin-top: 6px; }
 </style>
 </head>
 <body>
   <h1>Document Intelligence RAG — Demo</h1>
   <div class="banner" id="config-banner">Loading configuration…</div>
 
-  <textarea id="question" placeholder="Ask a question about the demo receipts…"></textarea><br>
+  <div class="tabs">
+    <div class="tab active" id="tab-demo" onclick="switchMode('demo')">Sample Receipts (Demo)</div>
+    <div class="tab" id="tab-upload" onclick="switchMode('upload')">Upload Your Own</div>
+  </div>
+
+  <div id="upload-panel" class="hidden">
+    <div class="upload-box">
+      <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.pdf">
+      <div class="session-note">JPG, PNG, or PDF — max 10MB, max 20 pages. Processed locally (OCR via Tesseract, no cloud service). Files are deleted automatically after 30 minutes or when you click "Clear uploaded receipts."</div>
+      <button id="upload-btn" onclick="uploadFile()">Upload & Process</button>
+      <button class="secondary" onclick="clearSession()">Clear uploaded receipts</button>
+    </div>
+    <div id="upload-status"></div>
+    <h2>Uploaded receipts (this session only)</h2>
+    <div id="file-list"><p class="session-note">No files uploaded yet.</p></div>
+  </div>
+
+  <textarea id="question" placeholder="Ask a question about the receipts…"></textarea><br>
   <button id="ask-btn" onclick="ask()">Ask</button>
 
   <div class="samples" id="samples"></div>
@@ -35,13 +64,28 @@
   <div id="result"></div>
 
 <script>
+let currentMode = 'demo';
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.getElementById('tab-demo').classList.toggle('active', mode === 'demo');
+  document.getElementById('tab-upload').classList.toggle('active', mode === 'upload');
+  document.getElementById('upload-panel').classList.toggle('hidden', mode !== 'upload');
+  document.getElementById('samples').classList.toggle('hidden', mode !== 'demo');
+  document.getElementById('result').innerHTML = '';
+  if (mode === 'upload') {
+    document.getElementById('question').placeholder = 'Ask about vendor, date, total, tax, or line items on YOUR uploaded receipt…';
+    refreshSessionFiles();
+  } else {
+    document.getElementById('question').placeholder = 'Ask a question about the demo receipts…';
+  }
+}
+
 async function loadSamples() {
   const res = await fetch('/sample-questions');
   const data = await res.json();
   document.getElementById('config-banner').textContent =
-    data.config === 'demo'
-      ? 'Demo mode: answers are grounded in synthetic sample receipts only (not the real research corpus). See PROGRESS.md for why.'
-      : 'Research mode.';
+    'Demo mode uses synthetic sample receipts only — not the real research corpus (see PROGRESS.md). Uploaded receipts are only searchable within your own session.';
   const container = document.getElementById('samples');
   data.questions.forEach(q => {
     const btn = document.createElement('button');
@@ -49,6 +93,68 @@ async function loadSamples() {
     btn.onclick = () => { document.getElementById('question').value = q; ask(); };
     container.appendChild(btn);
   });
+}
+
+async function refreshSessionFiles() {
+  const res = await fetch('/session', { credentials: 'same-origin' });
+  const data = await res.json();
+  const container = document.getElementById('file-list');
+  if (!data.files.length) {
+    container.innerHTML = '<p class="session-note">No files uploaded yet.</p>';
+    return;
+  }
+  container.innerHTML = '';
+  data.files.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'file-card';
+    div.innerHTML = `<strong>${escapeHtml(f.original_filename)}</strong> — ${f.page_count} page(s), ${f.extracted_char_count} extracted characters` +
+      (f.warning ? `<div class="warning">${escapeHtml(f.warning)}</div>` : '');
+    container.appendChild(div);
+  });
+}
+
+async function uploadFile() {
+  const input = document.getElementById('file-input');
+  const statusDiv = document.getElementById('upload-status');
+  if (!input.files.length) { statusDiv.innerHTML = '<p class="error">Choose a file first.</p>'; return; }
+
+  const file = input.files[0];
+  const formData = new FormData();
+  formData.append('file', file);
+
+  statusDiv.innerHTML = `<p class="loading">Processing ${escapeHtml(file.name)} (extracting text, OCR if needed)…</p>`;
+  document.getElementById('upload-btn').disabled = true;
+
+  try {
+    const res = await fetch('/upload', { method: 'POST', body: formData, credentials: 'same-origin' });
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusDiv.innerHTML = `<div class="error">Upload failed (${res.status}): ${escapeHtml(data.detail || 'unknown error')}</div>`;
+      return;
+    }
+
+    let pagesHtml = data.pages.map(p =>
+      `<details class="file-card"><summary>Page ${p.page_number} ${p.used_ocr ? '(OCR)' : '(embedded text)'}</summary><pre>${escapeHtml(p.text || '(no text extracted)')}</pre></details>`
+    ).join('');
+
+    statusDiv.innerHTML = `<div class="answer">Processed "${escapeHtml(data.original_filename)}" — ${data.page_count} page(s), ${data.chunks_indexed} chunk(s) indexed.` +
+      (data.warning ? `<div class="warning">${escapeHtml(data.warning)}</div>` : '') +
+      `</div>${pagesHtml}`;
+
+    input.value = '';
+    refreshSessionFiles();
+  } catch (e) {
+    statusDiv.innerHTML = `<div class="error">Network error: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    document.getElementById('upload-btn').disabled = false;
+  }
+}
+
+async function clearSession() {
+  await fetch('/session', { method: 'DELETE', credentials: 'same-origin' });
+  document.getElementById('upload-status').innerHTML = '<p class="session-note">Uploaded receipts cleared.</p>';
+  refreshSessionFiles();
 }
 
 async function ask() {
@@ -64,19 +170,18 @@ async function ask() {
     const res = await fetch('/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, top_k: 5 }),
+      credentials: 'same-origin',
+      body: JSON.stringify({ question, top_k: 5, mode: currentMode }),
     });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      resultDiv.innerHTML = `<div class="error">Request failed (${res.status}): ${err.detail || 'unknown error'}</div>`;
-      return;
-    }
 
     const data = await res.json();
 
+    if (!res.ok) {
+      resultDiv.innerHTML = `<div class="error">Request failed (${res.status}): ${escapeHtml(data.detail || 'unknown error')}</div>`;
+      return;
+    }
     if (data.error) {
-      resultDiv.innerHTML = `<div class="error">Generation failed: ${data.error}</div>`;
+      resultDiv.innerHTML = `<div class="error">Generation failed: ${escapeHtml(data.error)}</div>`;
       return;
     }
 
@@ -86,7 +191,7 @@ async function ask() {
     if (data.sources && data.sources.length) {
       html += '<div><strong style="font-size:0.85rem;">Sources:</strong></div>';
       data.sources.forEach(s => {
-        html += `<div class="source"><div class="source-meta">${s.chunk_id} · ${s.source} · score ${s.score.toFixed(3)}</div>${escapeHtml(s.excerpt)}…</div>`;
+        html += `<div class="source"><div class="source-meta">${escapeHtml(s.chunk_id)} · ${escapeHtml(s.source)} · score ${s.score.toFixed(3)}</div>${escapeHtml(s.excerpt)}…</div>`;
       });
     }
 
@@ -109,7 +214,7 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-loadSamples().catch(e => {
+loadSamples().catch(() => {
   document.getElementById('config-banner').textContent = 'Could not reach the API — is the server running?';
 });
 </script>

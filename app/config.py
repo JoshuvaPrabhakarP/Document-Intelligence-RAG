@@ -47,6 +47,14 @@ class Settings(BaseSettings):
 
     max_question_length: int = 500
 
+    # --- Upload mode (user-supplied receipts, session-isolated) ---
+    upload_dir: str = "/tmp/doc-rag-uploads"  # OUTSIDE the repo — never gitignored-by-convention, just not in it
+    upload_max_file_mb: int = 10
+    upload_max_pdf_pages: int = 20
+    upload_processing_timeout_s: int = 45
+    upload_session_ttl_minutes: int = 30
+    upload_embedding_device: str = "cpu"  # see app/upload/indexing.py docstring for why not "cuda"
+
 
 @lru_cache
 def get_settings() -> Settings:
