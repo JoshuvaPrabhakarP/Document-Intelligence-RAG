@@ -32,7 +32,7 @@ Evaluates the Milestone 3 LangGraph agent against the Standard RAG baseline on a
   "cold_start_warmup_ms": 112254
 }
 ```
-Full snapshot: `eval/results/config_snapshot.json`. `git_commit` in that file (`a6f075e`) is Milestone 3's commit — this evaluation's own two fixes (reranking in the agent tool, the cumulative clarification cap in §7) were made and tested in this same session and are committed separately (see final commit referenced in PROGRESS.md).
+Full snapshot: `eval/results/config_snapshot.json`. `git_commit` in that file (`a6f075e`) is Milestone 3's commit, captured at the moment the evaluation ran; this evaluation's own two fixes (reranking in the agent tool, the cumulative clarification cap in §7) were made and tested in this same working session and are committed together with this report as commit `6c4606a`.
 
 ## 3. Headline comparison (14 held-out cases)
 
