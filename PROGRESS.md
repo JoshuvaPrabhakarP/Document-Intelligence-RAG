@@ -428,3 +428,43 @@ Automated tests — `venv/bin/python3 -m pytest tests/`: **52 passed** (30 pre-e
 New: `app/agent/__init__.py`, `app/agent/state.py`, `app/agent/tools.py`, `app/agent/llm.py`, `app/agent/graph.py`, `tests/test_agent.py`.
 Modified: `app/main.py` (agent branch in `/query`, shared `sessions` singleton import), `app/upload/session.py` (`PendingClarification` + its three accessor methods, module-level `sessions` singleton moved here to avoid a circular import with `app/agent/tools.py`), `app/schemas.py` (`workflow` request field; `route`/`clarification_question`/`execution_trace` response fields), `app/static/index.html`, `app/static/app.js`, `app/static/style.css` (workflow toggle + execution-details disclosure).
 Untouched: `app/rag_pipeline.py` and every other Standard RAG file — the baseline is byte-for-byte what it was before this milestone.
+
+## Milestone 4 — Evaluate the agent against Standard RAG (complete)
+
+Full methodology, per-category findings, and the headline comparison table live in **`eval/EVALUATION_REPORT.md`** — this section is a summary pointer, not a duplicate.
+
+### What this covered
+
+A frozen, synthetic evaluation set (`eval/cases.json`: 6 dev + 14 held-out cases spanning answerable, absent-information, ambiguous+clarification, and adversarial-injection questions, across both demo and synthetic-upload scenarios) run against both `workflow=standard` and `workflow=agent` through the real FastAPI app, with 100% automated scoring (no LLM judge). `eval/run_eval.py` is the harness; `eval/analyze.py` prints every table in the report from the saved raw results.
+
+### Two real bugs found before/during this milestone
+
+1. **Before running the comparison**: the agent's `search_documents` tool (`app/agent/tools.py`) only reused retrieval, never reranking — unlike what Milestone 3 actually specified ("reuse existing retrieval and reranking") and unlike Standard RAG. Fixed so both systems retrieve the same large pool and rerank with the same model before this evaluation ran, so the comparison is apples-to-apples.
+2. **Discovered by the evaluation itself**: clarification follow-up resolution is broken. `assess_evidence_node` decides the route from `state["question"]`, which `resume_state()` sets to the *original* ambiguous question, not the user's clarification answer — so resuming after a correctly-triggered clarify re-asks the same bare question against the same multi-candidate evidence and asks to clarify again instead of resolving. Caught because this milestone ran real end-to-end clarify→resume cases against the real model; Milestone 3's own tests all mocked the evidence-assessment call directly, which can't catch a bug in what gets passed *into* it. **Not fixed in this milestone** — see `eval/EVALUATION_REPORT.md` §9 for the fix path; fixing and re-reporting the same held-out numbers now would violate this milestone's own "don't tune on held-out failures" discipline.
+
+### A real gap closed this milestone (not just found)
+
+Each resumed clarify turn got its own fresh bounded-execution budget with no cap across turns — repeated clarification could spend unbounded cumulative tool calls/time across a conversation. Fixed: `PendingClarification` now tracks `rounds`/`cumulative_tool_calls`, checked against new `MAX_CLARIFICATION_ROUNDS`/`MAX_CUMULATIVE_TOOL_CALLS` caps in `app/main.py` before any resume. Three new tests cover this (including cross-session independence of the counters).
+
+### A methodology bug caught before publishing results
+
+The first full evaluation run was contaminated by a leftover Milestone-3 manual-testing server that had been left running for over an hour, competing for CPU/RAM with the evaluation itself — severe enough that one real timeout flipped a result. That run was discarded (kept on disk as `eval/results/*_run1_contaminated.json` for the record) and re-run cleanly after stopping the stale process. See the report's §1 and §6 for how that run's one genuine finding (bounded execution correctly firing under real resource pressure) was still salvaged and clearly labeled.
+
+### Headline result
+
+Tie on answerable-question accuracy, citation validity, and correct abstention (100%/100%, 4/4 each). Agent loses on clarification follow-up (0/2 resolved correctly vs. Standard RAG's 3/3 once given equivalent information directly) and on a case where it silently committed to one of two ambiguous candidates rather than Standard RAG's accidental two-candidate hedge. Both systems tied by *both failing* an adversarial factual-override injection case — a real, shared vulnerability, not a point in either system's favor. No claim is made that the agent is more accurate than Standard RAG; full detail and the Gap 5 completion assessment are in `eval/EVALUATION_REPORT.md` §8 and §11.
+
+### Verified
+
+```
+venv/bin/python3 eval/run_eval.py              # full run: 20 cases + variability subset
+venv/bin/python3 eval/analyze.py               # prints every table in the report
+venv/bin/python3 -m pytest tests/              # 55 passed (30 pre-M3 + 25 in tests/test_agent.py, including 3 new M4 tests), zero regressions
+```
+
+### Files changed this milestone
+
+New: `eval/cases.json`, `eval/run_eval.py`, `eval/analyze.py`, `eval/EVALUATION_REPORT.md`, `eval/results/` (raw results + config snapshots, both the clean run and the discarded contaminated run, all synthetic data only).
+Modified: `app/agent/tools.py` (reranking fix), `app/agent/graph.py` (new `MAX_CLARIFICATION_ROUNDS`/`MAX_CUMULATIVE_TOOL_CALLS` constants), `app/upload/session.py` (`PendingClarification.rounds`/`cumulative_tool_calls`), `app/main.py` (cumulative clarification cap enforcement), `tests/test_agent.py` (3 new tests + a reranker warm-up fix for the real-model tests).
+Untouched: `app/rag_pipeline.py` and the rest of the Standard RAG baseline.
+Never committed: any real uploaded document content (only synthetic PDFs generated on the fly, same as every prior milestone).

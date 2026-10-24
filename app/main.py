@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.agent.graph import get_graph
+from app.agent.graph import MAX_CLARIFICATION_ROUNDS, MAX_CUMULATIVE_TOOL_CALLS, get_graph
 from app.agent.state import new_state, resume_state
 from app.config import get_settings
 from app.excerpt import select_excerpt
@@ -120,8 +120,25 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
     the SAME per-session store uploads already use (app/upload/session.py)
     — so "clear uploaded receipts" or session expiry wipes any pending
     clarification for free, with no separate cleanup path to maintain.
+
+    MAX_CLARIFICATION_ROUNDS / MAX_CUMULATIVE_TOOL_CALLS (Milestone 4) bound
+    the WHOLE conversation thread, not just one turn — see graph.py's
+    module docstring for why a per-turn-only budget isn't enough on its own.
     """
     pending = sessions.get_pending_clarification(session_id) if session_id else None
+    if pending and (pending.rounds >= MAX_CLARIFICATION_ROUNDS
+                     or pending.cumulative_tool_calls >= MAX_CUMULATIVE_TOOL_CALLS):
+        sessions.clear_pending_clarification(session_id)
+        return {
+            "answer": "I wasn't able to resolve this after several rounds of clarification. "
+                      "Please ask a single, more specific question.",
+            "sources": [], "has_sufficient_evidence": False,
+            "retrieval_latency_ms": 0.0, "rerank_latency_ms": None, "generation_latency_ms": 0.0,
+            "error": f"Clarification limit reached ({pending.rounds} rounds, "
+                     f"{pending.cumulative_tool_calls} cumulative tool calls).",
+            "route": "insufficient_evidence", "clarification_question": None, "execution_trace": [],
+        }
+
     if pending:
         original_question = pending.original_question
         state = resume_state(
@@ -144,6 +161,8 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
             clarification_question=result["clarification_question"] or "",
             messages=result["messages"],
             retrieved_passages=result["retrieved_passages"],
+            rounds=(pending.rounds if pending else 0) + 1,
+            cumulative_tool_calls=(pending.cumulative_tool_calls if pending else 0) + result["tool_call_count"],
         ))
     elif session_id:
         sessions.clear_pending_clarification(session_id)
@@ -159,11 +178,10 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
         if (passage := result["retrieved_passages"].get(pid)) is not None
     ]
 
-    # No separate rerank step in the agent workflow (reranking still
-    # happens, if configured, inside HybridRetriever's own search() call —
-    # it's just not a distinct timed phase here the way it is in the
-    # standard pipeline), so rerank_latency_ms is deliberately None rather
-    # than a fabricated 0.
+    # Reranking happens inside the "tools" node now too (app/agent/tools.py),
+    # same model as the standard pipeline's reranker — it's just not a
+    # separately timed phase here, folded into tool_ms below, so
+    # rerank_latency_ms is deliberately None rather than a fabricated 0.
     tool_ms = sum(t["duration_ms"] for t in result["execution_trace"] if t["node"] == "tools")
     model_ms = sum(t["duration_ms"] for t in result["execution_trace"] if t["node"] in ("agent", "assess_evidence"))
 

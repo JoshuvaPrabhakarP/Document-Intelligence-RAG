@@ -39,11 +39,20 @@ class PendingClarification:
     question — Milestone 3. Lives inside the SAME per-session dict as
     uploaded files, so clearing or expiring a session (both already-existing
     code paths) wipes this for free, with no separate cleanup mechanism to
-    forget."""
+    forget.
+
+    rounds/cumulative_tool_calls (Milestone 4): each resumed graph.invoke()
+    gets its own fresh per-turn execution budget, but WITHOUT tracking
+    these across turns, a user (or a model that keeps asking for
+    clarification) could repeat that indefinitely for unbounded total tool
+    calls / wall-clock time. app/main.py checks these against
+    MAX_CLARIFICATION_ROUNDS / MAX_CUMULATIVE_TOOL_CALLS before resuming."""
     original_question: str
     clarification_question: str
     messages: list[dict]  # the agent's message history at the point it paused
     retrieved_passages: dict  # passages already gathered, so a resume doesn't re-search from scratch
+    rounds: int = 1
+    cumulative_tool_calls: int = 0
 
 
 class SessionManager:

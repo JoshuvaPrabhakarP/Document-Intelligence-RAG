@@ -34,6 +34,19 @@ MAX_TOOL_CALLS = 4
 MAX_STEPS = 10
 TIMEOUT_S = 60
 
+# Each graph.invoke() gets its OWN fresh MAX_TOOL_CALLS/MAX_STEPS/TIMEOUT_S
+# budget (see state.py's resume_state() docstring) — by design, so a single
+# turn is always bounded. But a clarify route pauses and resumes as a NEW
+# invocation, so without a separate cap on the conversation as a whole, a
+# user (or a model that keeps asking for clarification) could repeat that
+# indefinitely and spend unbounded cumulative tool calls / wall-clock time
+# across many turns. These two caps bound the WHOLE conversation thread,
+# enforced in app/main.py (where PendingClarification's rounds/
+# cumulative_tool_calls are tracked) — not inside the graph itself, since
+# a single invocation has no notion of "previous turns."
+MAX_CLARIFICATION_ROUNDS = 3
+MAX_CUMULATIVE_TOOL_CALLS = 2 * MAX_TOOL_CALLS
+
 SYSTEM_PROMPT = """You answer questions about business documents (receipts, invoices) using two tools:
 - search_documents(query, vendor_filter?) — find relevant passages
 - fetch_source(passage_id) — get the full text of a passage you already found

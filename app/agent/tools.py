@@ -21,10 +21,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"
 
 from fusion import HybridRetriever  # noqa: E402
 from metadata_filter import MetadataRetriever  # noqa: E402
+from rerank import Reranker  # noqa: E402
 
 from app.config import get_settings
 from app.upload import retriever_cache as upload_retriever_cache
 from app.upload.session import sessions as upload_sessions
+
+TOOL_RESULT_K = 5  # how many passages the model sees per search_documents call
 
 TOOL_SCHEMAS = [
     {
@@ -78,6 +81,7 @@ class ToolArgumentError(ValueError):
 
 _demo_retriever = None
 _demo_metadata_retriever = None
+_reranker = None
 
 
 def _get_demo_retriever():
@@ -107,11 +111,32 @@ def _get_demo_metadata_retriever():
     return _demo_metadata_retriever
 
 
+def _get_reranker():
+    global _reranker
+    if _reranker is None:
+        settings = get_settings()
+        _reranker = Reranker(model_name=settings.reranker_model)
+    return _reranker
+
+
+def _rerank_and_cut(query: str, pool: list[dict]) -> list[dict]:
+    """Mirrors app/rag_pipeline.py's retrieve-a-large-pool-then-rerank
+    pattern exactly, so Standard RAG and the agent's search_documents tool
+    use COMPARABLE retrieval settings (Milestone 4 requirement) — reranking
+    was reused in name only before this fix: the tool asked the retriever
+    for a final k=5 directly and never reranked at all."""
+    settings = get_settings()
+    if settings.use_reranker and pool:
+        pool, _ = _get_reranker().rerank(query, pool)
+    return pool[:TOOL_RESULT_K]
+
+
 def execute_search_documents(args: dict, *, session_mode: str, session_id: str | None) -> list[dict]:
     query = args.get("query")
     if not query or not isinstance(query, str):
         raise ToolArgumentError("search_documents requires a non-empty 'query' string.")
     vendor_filter = args.get("vendor_filter")
+    settings = get_settings()
 
     if session_mode == "upload":
         if not session_id:
@@ -120,21 +145,31 @@ def execute_search_documents(args: dict, *, session_mode: str, session_id: str |
         retriever = upload_retriever_cache.get_retriever(
             session_id, str(upload_sessions.index_dir(session_id)), str(upload_sessions.chunks_path(session_id))
         )
-        results = retriever.search(query, k=5, pool_size=30)
+        # k=settings.retrieval_pool_size (a large fused pool), pool_size=100 —
+        # same shape as rag_pipeline.py's answer_from_retriever(), so reranking
+        # below has the same amount of material to work with as Standard RAG.
+        pool = retriever.search(query, k=settings.retrieval_pool_size, pool_size=100)
         # Upload-mode chunks carry no metadata (no extraction model runs on
         # uploads, per Milestone 2's documented scope) — a vendor_filter
         # here has nothing to filter against, so it's accepted (the model
         # can still pass it) but has no effect, not an error.
     else:
         if vendor_filter:
-            results = _get_demo_metadata_retriever().search(
-                query, {"vendor": vendor_filter}, base="hybrid", k=5
-            )
-        else:
-            results = _get_demo_retriever().search(query, k=5, pool_size=50)
+            # Vendor-filtered search is pre-narrowed by exact metadata match,
+            # not a broad ranking problem — reranking a single vendor's
+            # already-small result set adds latency without changing the
+            # outcome, so this path intentionally skips the rerank step
+            # (same reasoning Standard RAG would apply if it had this filter).
+            return [
+                {"chunk_id": r["chunk_id"], "source": r["source"], "text": r["text"], "score": r.get("score")}
+                for r in _get_demo_metadata_retriever().search(query, {"vendor": vendor_filter}, base="hybrid", k=TOOL_RESULT_K)
+            ]
+        pool = _get_demo_retriever().search(query, k=settings.retrieval_pool_size, pool_size=100)
 
+    results = _rerank_and_cut(query, pool)
     return [
-        {"chunk_id": r["chunk_id"], "source": r["source"], "text": r["text"], "score": r.get("score")}
+        {"chunk_id": r["chunk_id"], "source": r["source"], "text": r["text"],
+         "score": r.get("rerank_score", r.get("score"))}
         for r in results
     ]
 

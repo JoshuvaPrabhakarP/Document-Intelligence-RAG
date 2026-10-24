@@ -351,6 +351,90 @@ def test_agent_workflow_clarify_then_resume_via_the_api():
     assert sessions.get_pending_clarification(session_id) is None
 
 
+def test_repeated_clarification_is_capped_by_rounds_not_unbounded():
+    """A user (or a model that keeps asking for clarification) repeating
+    the clarify loop forever must eventually be cut off — bounded
+    execution has to hold across the WHOLE conversation thread, not just
+    one turn (Milestone 4)."""
+    client = TestClient(app)
+    with patch.object(agent_graph, "call_with_tools", return_value=_llm_result(content="still unsure")), \
+         patch.object(agent_graph, "assess_evidence") as mock_assess:
+        mock_assess.return_value = {
+            "route": "clarify", "answer": None, "clarification_question": "Which one?",
+            "cited_passage_ids": [], "reasoning": "ambiguous",
+        }
+
+        # Rounds 1..MAX_CLARIFICATION_ROUNDS each genuinely invoke the graph.
+        for _ in range(agent_graph.MAX_CLARIFICATION_ROUNDS):
+            resp = client.post("/query", json={"question": "still ambiguous", "mode": "demo", "workflow": "agent"})
+            assert resp.json()["route"] == "clarify"
+        assert mock_assess.call_count == agent_graph.MAX_CLARIFICATION_ROUNDS
+
+        # One more "clarification answer" must be rejected WITHOUT invoking
+        # the graph again — the cap is enforced before resuming, not by
+        # letting the model decide to stop.
+        resp = client.post("/query", json={"question": "one more try", "mode": "demo", "workflow": "agent"})
+        body = resp.json()
+
+    assert mock_assess.call_count == agent_graph.MAX_CLARIFICATION_ROUNDS  # unchanged — no extra graph run
+    assert body["route"] == "insufficient_evidence"
+    assert "Clarification limit reached" in body["error"]
+    session_id = client.cookies.get("session_id")
+    assert sessions.get_pending_clarification(session_id) is None
+
+
+def test_repeated_clarification_is_capped_by_cumulative_tool_calls():
+    """Even within fewer rounds than the round cap, unbounded tool use
+    across those rounds must still be capped."""
+    client = TestClient(app)
+    with patch.object(agent_graph, "call_with_tools") as mock_llm, \
+         patch.object(agent_graph, "execute_search_documents", return_value=[]), \
+         patch.object(agent_graph, "assess_evidence") as mock_assess:
+        # Always wants another tool call -> spends MAX_TOOL_CALLS per round.
+        mock_llm.return_value = _llm_result(tool_calls=[_tool_call("t", "search_documents", {"query": "x"})])
+        mock_assess.return_value = {
+            "route": "clarify", "answer": None, "clarification_question": "Which one?",
+            "cited_passage_ids": [], "reasoning": "ambiguous",
+        }
+
+        rounds_until_capped = -(-agent_graph.MAX_CUMULATIVE_TOOL_CALLS // agent_graph.MAX_TOOL_CALLS)
+        assert rounds_until_capped < agent_graph.MAX_CLARIFICATION_ROUNDS  # cumulative cap must trip first
+
+        for _ in range(rounds_until_capped):
+            resp = client.post("/query", json={"question": "still ambiguous", "mode": "demo", "workflow": "agent"})
+            assert resp.json()["route"] == "clarify"
+
+        resp = client.post("/query", json={"question": "one more try", "mode": "demo", "workflow": "agent"})
+        body = resp.json()
+
+    assert body["route"] == "insufficient_evidence"
+    assert "cumulative tool calls" in body["error"]
+
+
+def test_clarification_rounds_are_isolated_per_session():
+    """Two different browsers/sessions clarifying at the same time must not
+    share or interfere with each other's round/cumulative-tool-call count."""
+    client_a = TestClient(app)
+    client_b = TestClient(app)
+    with patch.object(agent_graph, "call_with_tools", return_value=_llm_result(content="still unsure")), \
+         patch.object(agent_graph, "assess_evidence") as mock_assess:
+        mock_assess.return_value = {
+            "route": "clarify", "answer": None, "clarification_question": "Which one?",
+            "cited_passage_ids": [], "reasoning": "ambiguous",
+        }
+        # Session A uses up all but one of its rounds; session B has never asked.
+        for _ in range(agent_graph.MAX_CLARIFICATION_ROUNDS - 1):
+            client_a.post("/query", json={"question": "still ambiguous", "mode": "demo", "workflow": "agent"})
+        resp_b = client_b.post("/query", json={"question": "also ambiguous", "mode": "demo", "workflow": "agent"})
+
+    sid_a = client_a.cookies.get("session_id")
+    sid_b = client_b.cookies.get("session_id")
+    assert sid_a != sid_b
+    assert resp_b.json()["route"] == "clarify"  # B's own first round, unaffected by A's count
+    assert sessions.get_pending_clarification(sid_a).rounds == agent_graph.MAX_CLARIFICATION_ROUNDS - 1
+    assert sessions.get_pending_clarification(sid_b).rounds == 1
+
+
 def test_clearing_the_session_wipes_pending_clarification():
     sid = "test-session-for-clarification-cleanup"
     sessions.touch_or_create(sid)
@@ -402,6 +486,19 @@ def _ollama_available() -> bool:
         return resp.status_code == 200
     except Exception:
         return False
+
+
+if _ollama_available():
+    # Pay the one-time cold-start cost of loading the local embedding/
+    # reranker models HERE, at collection time, rather than inside a timed
+    # test — the same cold/warm distinction this project has drawn since
+    # Milestone 1. Without this, the first real test below could trip
+    # graph.py's TIMEOUT_S purely from a cold model load, which would be a
+    # misleading "execution time limit" failure, not an actual bug.
+    from app.agent.tools import _get_demo_retriever, _get_reranker
+    _warm_pool = _get_demo_retriever().search("warm up", k=1, pool_size=5)
+    if _warm_pool:
+        _get_reranker().rerank("warm up", _warm_pool)
 
 
 @pytest.mark.skipif(not _ollama_available(), reason="Ollama not reachable — skipping real-model agent checks.")
