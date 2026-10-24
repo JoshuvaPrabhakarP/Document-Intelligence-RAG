@@ -239,3 +239,53 @@ Old behavior would have shown the clinic's name/address block instead — confir
 ### Known limitation
 
 Lexical overlap only — no semantic matching. In the insufficient-evidence test above, the excerpt shown was the "Date of service" line (matched on the shared word "date" with "date of birth"), not a deeper match — a fair, explainable miss given the approach, not a bug, but worth knowing: a semantically-themed question with no exact keyword overlap could still pick an excerpt that's lexically-close-but-conceptually-off. Not pursued further here since it doesn't affect the actual answer/evidence-flag correctness, only which excerpt is displayed alongside a correctly-flagged "I don't know."
+
+## Milestone 2 extension — polished portfolio-grade interface (complete)
+
+Full visual/UX redesign of `app/static/`, entirely frontend-scoped — **zero backend files changed**. Every requirement (drag-and-drop, document cards, suggested-question chips, a "Technical details" disclosure, even page references in citations) turned out to be achievable from data the API already returns, so nothing in `app/main.py`, `rag_pipeline.py`, or any other backend file needed to move.
+
+### What changed
+
+```
+app/static/
+├── index.html   # semantic markup only (was: markup + inline CSS + inline JS)
+├── style.css    # NEW — dashboard theme: navy/blue accents, light surfaces, responsive
+└── app.js       # NEW — all interaction logic, extracted from inline <script>
+```
+
+- **Layout:** clean dashboard — `Document Intelligence` heading, the exact requested subtitle, two ARIA-proper tabs (`Try Sample Receipts` / `Upload Your Documents`), consistent card/spacing system, responsive down to mobile widths (tested via CSS media query, not a live device).
+- **Upload:** the plain `<input type="file">` is now a drag-and-drop zone (mouse, keyboard — Enter/Space, and click-to-browse all work), auto-uploads on drop/select, shows one honest "Processing — extracting text and indexing…" status (no fake percentage, since the server genuinely does this as a single blocking step — a true multi-stage progress bar would need a backend streaming change, which is out of scope for an interface-only pass and is noted here rather than faked).
+- **Document cards:** compact — filename, page count, extracted character count, processing warning if any, plus the existing expandable full-extracted-text panel. Images get a visual badge, PDFs get a distinct badge ("preview where supported" — true client-side PDF rendering would need pdf.js, which the "avoid a framework unless necessary" instruction argued against pulling in for this).
+- **"Clear documents"** is a small `.btn-ghost` button (not a dominant red CTA like the previous version), with a native `confirm()` prompt before it actually deletes anything.
+- **Chips:** demo-mode chips are still the real, answerable sample questions from `/sample-questions` (unchanged, curated). Upload-mode chips are a new, deliberately **generic** list ("What is the total amount?", "Who is the vendor?", etc.) — not tied to any specific fabricated answer, since they have to work against whatever the user actually uploads.
+- **Answer states:** success/insufficient-evidence/error are now visually AND textually distinct (a checkmark+"Answered", a warning triangle+"Insufficient evidence", an X+"Error" — icon and label together, never color alone).
+- **Citations:** filename plus a parsed page number (`chunk_id` already encodes `_p{N}` for uploads — parsed client-side in `app.js`, no backend change) beneath the answer.
+- **Technical details:** chunk IDs, raw scores, and all latency numbers moved into a collapsed `<details>` per answer instead of always being visible.
+- **State:** switching tabs now restores that mode's last answer instead of wiping it; clearing documents explicitly wipes the upload mode's last answer (since its citations would point at now-deleted documents) — demo mode's last answer is untouched by a clear.
+- **Safety:** every dynamic value (answers, excerpts, filenames, error messages, extracted text) is inserted via `textContent`/`createElement`, never string-concatenated into `innerHTML` — the previous version already escaped correctly, but this rewrite removes the `innerHTML`-with-manual-escaping pattern entirely in favor of DOM construction, which can't be bypassed by a missed escape.
+- **Accessibility:** proper `role="tab"`/`aria-selected`/`aria-controls` on the tabs, `aria-live="polite"` on the status banner/file list/result area so screen readers announce updates, a real `<label>` for the question field, visible `:focus-visible` rings sized for keyboard navigation, `prefers-reduced-motion` respected for the spinner.
+- **Copy:** removed the one direct "see PROGRESS.md" reference from the UI; demo/retention/privacy language rewritten for an end user, kept factually identical to before (synthetic data, local-only OCR, 30-minute auto-expiry).
+
+### Verified — functionally, via the real running server
+
+No browser automation tool is available in this sandbox (checked: no Playwright, Selenium, or Chrome installed) — **visual rendering at desktop/mobile widths has not been visually inspected and remains pending your review.** Everything reachable without a browser was verified for real against the live server:
+- All three static files (`index.html`, `style.css`, `app.js`) load with correct content-types.
+- `app.js` passes `node --check` (syntax-valid) and every DOM ID it references was cross-checked to exist in `index.html`.
+- Demo-mode query end-to-end: correct answer, correct source.
+- Multi-page PDF upload + query: correct answer drawn from page 2 specifically, and the citation's `chunk_id` (`{file_id}_p2`) parses to "page 2" exactly as the new citation UI expects.
+- Session listing shape matches what the new file-card renderer consumes field-for-field.
+- The "no documents uploaded, query upload mode anyway" error path returns the exact `detail` field the new error-card renderer reads.
+- Full backend test suite re-run: **30/30 still passing** (expected — no backend file was touched).
+
+### Known limitations
+
+- **No live visual verification** (see above) — please check desktop and mobile rendering yourself and report anything that looks off.
+- **Upload progress is single-stage, not multi-stage** — accurately described as one step because that's what's actually happening server-side right now; true per-stage (upload → OCR → indexing) progress would need a streaming/polling backend change, out of scope for this pass.
+- **PDF preview is a badge, not a rendered thumbnail** — avoided pulling in pdf.js per the "no framework unless necessary" instruction. Image uploads could get a real thumbnail (via `URL.createObjectURL`) in a future pass if wanted.
+
+### Files changed/added this extension
+
+New: `app/static/style.css`, `app/static/app.js`.
+Rewritten: `app/static/index.html` (markup only now).
+Modified: `PROGRESS.md`.
+Untouched: every backend file — `app/main.py`, `app/rag_pipeline.py`, `app/schemas.py`, `app/config.py`, `app/upload/`, all of `scripts/`, all research/demo data.

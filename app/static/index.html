@@ -2,221 +2,78 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Document Intelligence RAG — Demo</title>
+<title>Document Intelligence</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
-  h1 { font-size: 1.4rem; }
-  h2 { font-size: 1.05rem; margin-top: 28px; }
-  .banner { background: #fff8e1; border: 1px solid #f0d878; border-radius: 8px; padding: 12px 16px; font-size: 0.9rem; margin-bottom: 20px; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-  .tab { padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc; background: #f8fafc; cursor: pointer; font-size: 0.9rem; }
-  .tab.active { background: #2563eb; color: white; border-color: #2563eb; }
-  textarea { width: 100%; box-sizing: border-box; min-height: 60px; font-size: 1rem; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
-  button { margin-top: 8px; padding: 8px 16px; font-size: 0.95rem; border-radius: 6px; border: none; background: #2563eb; color: white; cursor: pointer; }
-  button:disabled { background: #93c5fd; cursor: not-allowed; }
-  button.secondary { background: #ef4444; }
-  .samples { margin: 10px 0 20px; display: flex; flex-wrap: wrap; gap: 6px; }
-  .samples button { background: #eef2ff; color: #1e3a8a; font-size: 0.82rem; padding: 5px 10px; }
-  #result { margin-top: 20px; }
-  .answer { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px; }
-  .answer.no-evidence { background: #fef2f2; border-color: #fecaca; }
-  .error { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 14px; color: #991b1b; }
-  .warning { background: #fff8e1; border: 1px solid #f0d878; border-radius: 6px; padding: 8px 12px; font-size: 0.82rem; margin-top: 8px; }
-  .source { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin-top: 8px; font-size: 0.85rem; }
-  .source-meta { color: #64748b; font-size: 0.78rem; margin-bottom: 4px; }
-  .loading { color: #64748b; font-style: italic; }
-  .latency { color: #94a3b8; font-size: 0.78rem; margin-top: 10px; }
-  .hidden { display: none; }
-  .file-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
-  .file-card summary { cursor: pointer; font-size: 0.9rem; }
-  .file-card pre { white-space: pre-wrap; font-size: 0.8rem; background: #f8fafc; padding: 8px; border-radius: 6px; max-height: 200px; overflow-y: auto; }
-  .upload-box { border: 2px dashed #cbd5e1; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 16px; }
-  .session-note { font-size: 0.8rem; color: #64748b; margin-top: 6px; }
-</style>
+<meta name="description" content="Upload a receipt, ask questions, and get grounded answers with cited sources.">
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>Document Intelligence RAG — Demo</h1>
-  <div class="banner" id="config-banner">Loading configuration…</div>
+<div class="app">
 
-  <div class="tabs">
-    <div class="tab active" id="tab-demo" onclick="switchMode('demo')">Sample Receipts (Demo)</div>
-    <div class="tab" id="tab-upload" onclick="switchMode('upload')">Upload Your Own</div>
-  </div>
+  <header class="app-header">
+    <h1>Document Intelligence</h1>
+    <p class="subtitle">Upload a receipt. Ask questions. Find answers with sources.</p>
+  </header>
 
-  <div id="upload-panel" class="hidden">
-    <div class="upload-box">
-      <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.pdf">
-      <div class="session-note">JPG, PNG, or PDF — max 10MB, max 20 pages. Processed locally (OCR via Tesseract, no cloud service). Files are deleted automatically after 30 minutes or when you click "Clear uploaded receipts."</div>
-      <button id="upload-btn" onclick="uploadFile()">Upload & Process</button>
-      <button class="secondary" onclick="clearSession()">Clear uploaded receipts</button>
+  <nav class="tabs" aria-label="Choose a mode">
+    <button type="button" class="tab active" id="tab-demo" role="tab" aria-selected="true" aria-controls="panel-demo">
+      Try Sample Receipts
+    </button>
+    <button type="button" class="tab" id="tab-upload" role="tab" aria-selected="false" aria-controls="panel-upload">
+      Upload Your Documents
+    </button>
+  </nav>
+
+  <main>
+    <section id="panel-demo" role="tabpanel" aria-labelledby="tab-demo">
+      <p class="mode-description">
+        These are synthetic sample receipts built for this demo, not real documents —
+        a quick way to try the system without uploading anything of your own.
+      </p>
+      <div class="chips" id="demo-chips" aria-label="Suggested questions"></div>
+    </section>
+
+    <section id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" hidden>
+      <div class="upload-dropzone" id="dropzone" role="button" tabindex="0"
+           aria-label="Upload a receipt: drag and drop a file here, or press Enter to browse your files">
+        <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M12 16V4M12 4l-4 4M12 4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <p><strong>Drag and drop</strong> a receipt here, or <span class="link">click to browse</span></p>
+        <p class="hint">JPG, PNG, or PDF · up to 10MB · up to 20 pages · processed locally (no cloud OCR service) · automatically deleted after 30 minutes or when cleared</p>
+        <input type="file" id="file-input" class="sr-only" accept=".jpg,.jpeg,.png,.pdf" tabindex="-1" aria-hidden="true">
+      </div>
+
+      <div id="upload-status" class="status-banner hidden" role="status" aria-live="polite"></div>
+
+      <div class="documents-section">
+        <div class="documents-header">
+          <h2>Your documents</h2>
+          <button type="button" class="btn-ghost" id="clear-btn">Clear documents</button>
+        </div>
+        <div id="file-list" class="file-cards" aria-live="polite">
+          <p class="empty-state">No documents yet — drag a receipt above or click to browse.</p>
+        </div>
+      </div>
+
+      <div class="chips" id="upload-chips" aria-label="Suggested questions"></div>
+    </section>
+
+    <div class="ask-box">
+      <label for="question" class="sr-only">Your question</label>
+      <textarea id="question" placeholder="Ask a question about the sample receipts…"></textarea>
+      <button type="button" class="btn-primary" id="ask-btn">Ask</button>
     </div>
-    <div id="upload-status"></div>
-    <h2>Uploaded receipts (this session only)</h2>
-    <div id="file-list"><p class="session-note">No files uploaded yet.</p></div>
-  </div>
 
-  <textarea id="question" placeholder="Ask a question about the receipts…"></textarea><br>
-  <button id="ask-btn" onclick="ask()">Ask</button>
+    <div id="result" aria-live="polite"></div>
+  </main>
 
-  <div class="samples" id="samples"></div>
+  <footer>
+    Answers are generated locally from retrieved document text and may be incomplete or wrong — verify anything important against the source excerpt.
+  </footer>
 
-  <div id="result"></div>
-
-<script>
-let currentMode = 'demo';
-
-function switchMode(mode) {
-  currentMode = mode;
-  document.getElementById('tab-demo').classList.toggle('active', mode === 'demo');
-  document.getElementById('tab-upload').classList.toggle('active', mode === 'upload');
-  document.getElementById('upload-panel').classList.toggle('hidden', mode !== 'upload');
-  document.getElementById('samples').classList.toggle('hidden', mode !== 'demo');
-  document.getElementById('result').innerHTML = '';
-  if (mode === 'upload') {
-    document.getElementById('question').placeholder = 'Ask about vendor, date, total, tax, or line items on YOUR uploaded receipt…';
-    refreshSessionFiles();
-  } else {
-    document.getElementById('question').placeholder = 'Ask a question about the demo receipts…';
-  }
-}
-
-async function loadSamples() {
-  const res = await fetch('/sample-questions');
-  const data = await res.json();
-  document.getElementById('config-banner').textContent =
-    'Demo mode uses synthetic sample receipts only — not the real research corpus (see PROGRESS.md). Uploaded receipts are only searchable within your own session.';
-  const container = document.getElementById('samples');
-  data.questions.forEach(q => {
-    const btn = document.createElement('button');
-    btn.textContent = q;
-    btn.onclick = () => { document.getElementById('question').value = q; ask(); };
-    container.appendChild(btn);
-  });
-}
-
-async function refreshSessionFiles() {
-  const res = await fetch('/session', { credentials: 'same-origin' });
-  const data = await res.json();
-  const container = document.getElementById('file-list');
-  if (!data.files.length) {
-    container.innerHTML = '<p class="session-note">No files uploaded yet.</p>';
-    return;
-  }
-  container.innerHTML = '';
-  data.files.forEach(f => {
-    const div = document.createElement('div');
-    div.className = 'file-card';
-    div.innerHTML = `<strong>${escapeHtml(f.original_filename)}</strong> — ${f.page_count} page(s), ${f.extracted_char_count} extracted characters` +
-      (f.warning ? `<div class="warning">${escapeHtml(f.warning)}</div>` : '');
-    container.appendChild(div);
-  });
-}
-
-async function uploadFile() {
-  const input = document.getElementById('file-input');
-  const statusDiv = document.getElementById('upload-status');
-  if (!input.files.length) { statusDiv.innerHTML = '<p class="error">Choose a file first.</p>'; return; }
-
-  const file = input.files[0];
-  const formData = new FormData();
-  formData.append('file', file);
-
-  statusDiv.innerHTML = `<p class="loading">Processing ${escapeHtml(file.name)} (extracting text, OCR if needed)…</p>`;
-  document.getElementById('upload-btn').disabled = true;
-
-  try {
-    const res = await fetch('/upload', { method: 'POST', body: formData, credentials: 'same-origin' });
-    const data = await res.json();
-
-    if (!res.ok) {
-      statusDiv.innerHTML = `<div class="error">Upload failed (${res.status}): ${escapeHtml(data.detail || 'unknown error')}</div>`;
-      return;
-    }
-
-    let pagesHtml = data.pages.map(p =>
-      `<details class="file-card"><summary>Page ${p.page_number} ${p.used_ocr ? '(OCR)' : '(embedded text)'}</summary><pre>${escapeHtml(p.text || '(no text extracted)')}</pre></details>`
-    ).join('');
-
-    statusDiv.innerHTML = `<div class="answer">Processed "${escapeHtml(data.original_filename)}" — ${data.page_count} page(s), ${data.chunks_indexed} chunk(s) indexed.` +
-      (data.warning ? `<div class="warning">${escapeHtml(data.warning)}</div>` : '') +
-      `</div>${pagesHtml}`;
-
-    input.value = '';
-    refreshSessionFiles();
-  } catch (e) {
-    statusDiv.innerHTML = `<div class="error">Network error: ${escapeHtml(e.message)}</div>`;
-  } finally {
-    document.getElementById('upload-btn').disabled = false;
-  }
-}
-
-async function clearSession() {
-  await fetch('/session', { method: 'DELETE', credentials: 'same-origin' });
-  document.getElementById('upload-status').innerHTML = '<p class="session-note">Uploaded receipts cleared.</p>';
-  refreshSessionFiles();
-}
-
-async function ask() {
-  const question = document.getElementById('question').value.trim();
-  const resultDiv = document.getElementById('result');
-  const askBtn = document.getElementById('ask-btn');
-  if (!question) return;
-
-  askBtn.disabled = true;
-  resultDiv.innerHTML = '<p class="loading">Retrieving and generating an answer…</p>';
-
-  try {
-    const res = await fetch('/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ question, top_k: 5, mode: currentMode }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      resultDiv.innerHTML = `<div class="error">Request failed (${res.status}): ${escapeHtml(data.detail || 'unknown error')}</div>`;
-      return;
-    }
-    if (data.error) {
-      resultDiv.innerHTML = `<div class="error">Generation failed: ${escapeHtml(data.error)}</div>`;
-      return;
-    }
-
-    const evidenceClass = data.has_sufficient_evidence === false ? 'no-evidence' : '';
-    let html = `<div class="answer ${evidenceClass}"><strong>Answer:</strong> ${escapeHtml(data.answer)}</div>`;
-
-    if (data.sources && data.sources.length) {
-      html += '<div><strong style="font-size:0.85rem;">Sources:</strong></div>';
-      data.sources.forEach(s => {
-        html += `<div class="source"><div class="source-meta">${escapeHtml(s.chunk_id)} · ${escapeHtml(s.source)} · score ${s.score.toFixed(3)}</div>${escapeHtml(s.excerpt)}…</div>`;
-      });
-    }
-
-    html += `<div class="latency">retrieval ${data.retrieval_latency_ms.toFixed(0)}ms` +
-      (data.rerank_latency_ms ? ` · rerank ${data.rerank_latency_ms.toFixed(0)}ms` : '') +
-      (data.generation_latency_ms ? ` · generation ${data.generation_latency_ms.toFixed(0)}ms` : '') +
-      '</div>';
-
-    resultDiv.innerHTML = html;
-  } catch (e) {
-    resultDiv.innerHTML = `<div class="error">Network error: ${escapeHtml(e.message)}. Is the server running?</div>`;
-  } finally {
-    askBtn.disabled = false;
-  }
-}
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-loadSamples().catch(() => {
-  document.getElementById('config-banner').textContent = 'Could not reach the API — is the server running?';
-});
-</script>
+</div>
+<script src="/static/app.js"></script>
 </body>
 </html>
