@@ -38,6 +38,7 @@ const el = {
   clearBtn: document.getElementById("clear-btn"),
   question: document.getElementById("question"),
   askBtn: document.getElementById("ask-btn"),
+  askBtnLabel: document.getElementById("ask-btn-label"),
   result: document.getElementById("result"),
 };
 
@@ -54,18 +55,44 @@ function text(tag, content, className) {
   return n;
 }
 
-function icon(name) {
-  // Minimal inline SVGs — no icon-font/library dependency.
-  const paths = {
-    check: '<path d="M4 10l4 4 8-8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
-    warn: '<path d="M10 3l8 14H2L10 3z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/><circle cx="10" cy="14" r="0.9" fill="currentColor"/><path d="M10 8v3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
-    error: '<circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M7 7l6 6M13 7l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
-  };
+// Fixed, hand-authored icon set — every SVG path here is static markup we
+// wrote, never derived from a document's extracted text or a model's
+// answer, so building these via innerHTML carries none of the risk that
+// rule is meant to prevent (that risk is specifically about untrusted
+// content, which icon names selected from a fixed list below are not).
+const ICON_PATHS = {
+  check: '<path d="M4 10l4 4 8-8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  warn: '<path d="M10 3l8 14H2L10 3z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/><circle cx="10" cy="14" r="0.9" fill="currentColor"/><path d="M10 8v3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+  error: '<circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M7 7l6 6M13 7l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+  dollar: '<path d="M10 2v16M13.5 5.5c0-1.4-1.6-2.5-3.5-2.5S6.5 4.1 6.5 5.5 8 7.5 10 8s3.5 1.3 3.5 3-1.6 2.5-3.5 2.5-3.5-1-3.5-2.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  store: '<path d="M3 8l1-4h12l1 4M3 8v8a1 1 0 001 1h3v-5h6v5h3a1 1 0 001-1V8M3 8h14" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>',
+  calendar: '<rect x="3" y="4" width="14" height="13" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M3 8h14M7 2v4M13 2v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+  card: '<rect x="2" y="5" width="16" height="11" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M2 9h16" stroke="currentColor" stroke-width="1.5"/>',
+  list: '<path d="M7 5h10M7 10h10M7 15h10M3.5 5h.01M3.5 10h.01M3.5 15h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+  question: '<circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.8 7.8a2.2 2.2 0 014.1 1.1c0 1.5-2.1 1.5-2.1 3.2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><circle cx="9.8" cy="14.3" r="0.9" fill="currentColor"/>',
+  search: '<circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M18 18l-4.3-4.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+};
+
+function icon(name, size) {
   const span = document.createElement("span");
   span.setAttribute("aria-hidden", "true");
   span.style.display = "inline-flex";
-  span.innerHTML = `<svg width="16" height="16" viewBox="0 0 20 20">${paths[name] || ""}</svg>`;
+  const s = size || 16;
+  span.innerHTML = `<svg width="${s}" height="${s}" viewBox="0 0 20 20">${ICON_PATHS[name] || ICON_PATHS.question}</svg>`;
   return span;
+}
+
+// Picks a representative icon for a suggested-question chip based on its
+// wording — purely a visual cue, never changes what question gets asked
+// or how it's answered.
+function chipIconFor(question) {
+  const q = question.toLowerCase();
+  if (/(total|amount|cost|price|tax)/.test(q)) return "dollar";
+  if (/(vendor|store|merchant|business|who)/.test(q)) return "store";
+  if (/(date|when)/.test(q)) return "calendar";
+  if (/(payment|paid|card)/.test(q)) return "card";
+  if (/(item|purchase|line|bought)/.test(q)) return "list";
+  return "question";
 }
 
 // ---------- tabs ----------
@@ -115,7 +142,10 @@ function makeChip(question) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "chip";
-  btn.textContent = question;
+  const iconSpan = icon(chipIconFor(question), 14);
+  iconSpan.classList.add("chip-icon");
+  btn.appendChild(iconSpan);
+  btn.appendChild(document.createTextNode(question)); // text node — never innerHTML
   btn.addEventListener("click", () => {
     el.question.value = question;
     ask();
@@ -244,17 +274,10 @@ function buildFileCard(f) {
   card.className = "file-card";
 
   const isImage = /\.(jpe?g|png)$/i.test(f.original_filename);
-  if (isImage) {
-    const img = document.createElement("div");
-    img.className = "thumb-icon";
-    img.textContent = "IMG";
-    card.appendChild(img);
-  } else {
-    const badge = document.createElement("div");
-    badge.className = "thumb-icon";
-    badge.textContent = "PDF";
-    card.appendChild(badge);
-  }
+  const badge = document.createElement("div");
+  badge.className = "thumb-icon " + (isImage ? "img" : "pdf");
+  badge.textContent = isImage ? "IMG" : "PDF";
+  card.appendChild(badge);
 
   const meta = document.createElement("div");
   meta.className = "meta";
@@ -297,7 +320,7 @@ async function ask() {
 
   state.asking = true;
   el.askBtn.disabled = true;
-  el.askBtn.textContent = "Asking…";
+  el.askBtnLabel.textContent = "Asking…";
   renderWorking();
 
   try {
@@ -332,7 +355,7 @@ async function ask() {
   } finally {
     state.asking = false;
     el.askBtn.disabled = false;
-    el.askBtn.textContent = "Ask";
+    el.askBtnLabel.textContent = "Ask document";
   }
 }
 
@@ -345,9 +368,30 @@ function renderWorking() {
   el.result.appendChild(banner);
 }
 
+function renderEmptyState() {
+  const wrap = document.createElement("div");
+  wrap.className = "card empty-result";
+  const svg = document.createElement("div");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = `<svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.4">
+    <path d="M14 6h14l8 8v26a2 2 0 01-2 2H14a2 2 0 01-2-2V8a2 2 0 012-2z" stroke-linejoin="round"/>
+    <path d="M28 6v8h8" stroke-linejoin="round"/>
+    <path d="M17 24h14M17 29h14M17 19h7" stroke-linecap="round"/>
+    <circle cx="34" cy="34" r="7" fill="white" stroke-width="1.4"/>
+    <path d="M38.5 38.5L42 42" stroke-linecap="round"/>
+  </svg>`;
+  wrap.appendChild(svg);
+  wrap.appendChild(text("p", "No answer yet", "empty-title"));
+  wrap.appendChild(text("p", "Pick a suggested question or type your own — the answer will appear here with its supporting source."));
+  el.result.appendChild(wrap);
+}
+
 function renderResult(result) {
   clear(el.result);
-  if (!result) return;
+  if (!result) {
+    renderEmptyState();
+    return;
+  }
 
   if (result.kind === "error") {
     const card = document.createElement("div");

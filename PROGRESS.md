@@ -289,3 +289,37 @@ New: `app/static/style.css`, `app/static/app.js`.
 Rewritten: `app/static/index.html` (markup only now).
 Modified: `PROGRESS.md`.
 Untouched: every backend file — `app/main.py`, `app/rag_pipeline.py`, `app/schemas.py`, `app/config.py`, `app/upload/`, all of `scripts/`, all research/demo data.
+
+## Milestone 2 extension — colorful portfolio redesign (complete)
+
+The previous pass was a clean but visually plain dashboard; this one is a substantial visual redesign per explicit direction — again entirely frontend-scoped, zero backend files touched.
+
+### What changed
+
+- **Color system** (new CSS custom properties): navy `#0b1226`→violet `#5b21b6` gradient header, pale lavender page background (`#f4f2fc`) with two large blurred radial-gradient "blobs" (blue + violet, 22% opacity) fixed behind the content so the page never reads as flat — explicit requirement.
+- **Layout:** two-column CSS grid on desktop (`minmax(300px,380px) 1fr`) — left column holds mode selection (segmented tabs, demo/upload panels), right column holds the question composer and answer, both inside `.card` surfaces (white, 18px radius, soft shadow). Collapses to a single stacked column under 860px.
+- **Segmented tabs:** filled pill control on a lavender track; the active tab gets the blue→violet gradient fill and a matching shadow, replacing the previous underline-style tabs.
+- **Header:** brand icon (document SVG in a translucent tile) + "Document Intelligence" + the requested tagline "Answers grounded in your documents.", white text on the gradient.
+- **Upload dropzone:** lavender-tinted, violet dashed border, a gradient circular upload-icon badge; drag-over state switches to a teal/success tint with a slight scale transform.
+- **Chips:** now carry a small icon alongside the text. Demo chips (fetched from `/sample-questions`, unchanged data) get an icon picked client-side by keyword match (total→$, vendor→store, date→calendar, payment→card, items→list, fallback→"?"). Upload chips are still the generic, non-answer-specific list from the previous pass, now with the same icon treatment.
+- **Answer card:** status row (icon + bold label: "Answered" / "Insufficient evidence" / "Error") stays from the prior pass; sources heading is now teal, each source card has a teal left-accent border and a violet filename/page label. Technical details stay in the same collapsed `<details>`, now on a tinted background for contrast.
+- **Empty state:** before any question is asked (or right after clearing documents), the right column now shows a document-with-magnifying-glass illustration and "No answer yet — pick a suggested question or type your own…" instead of being visually blank. This is new: the prior version just left the area empty.
+- **"Ask document" button:** blue→violet gradient, hover lift, icon + label — the label lives in its own `<span id="ask-btn-label">` now specifically so the in-flight "Asking…" state swaps only the text, never destroying the icon markup around it.
+
+### What did NOT change
+
+No fake data was added anywhere in this pass, per explicit instruction: no invented confidence percentages, no multi-stage progress simulation (upload status is still the same single honest message as before, just restyled), no decorative controls that don't do anything. Every element that looks clickable is wired to real existing behavior.
+
+### Verified — functionally, via the real running server
+
+**Visual rendering has NOT been inspected** — this sandbox still has no browser automation tool (no Playwright/Selenium/Chrome), so desktop/mobile appearance is reported as pending your review, not assumed to look right. Everything reachable without a browser was re-verified:
+- All three static files load with correct content-types; `app.js` passes `node --check`; every DOM ID it references (including the new `ask-btn-label`) was cross-checked against the new `index.html`.
+- Demo-mode query: correct answer, correct evidence flag.
+- Full upload→query→citation→clear flow on a fresh synthetic 2-page PDF: correct answer ("Visa"), correct page attribution (page 2, where the payment lines actually are), correct excerpt (the payment-method lines specifically, confirming the earlier excerpt-selection fix still works through the new UI), clear succeeds.
+- Full backend test suite re-run: **30/30 passing** (unchanged, as expected — no backend file was touched).
+
+### Files changed this extension
+
+Rewritten: `app/static/style.css`, `app/static/index.html`, `app/static/app.js` (extended, not replaced — all prior logic for uploads/session isolation/safe rendering is intact, only chip-icon selection, the empty-state renderer, and the button-label element reference were added/changed).
+Modified: `PROGRESS.md`.
+Untouched: every backend file, exactly as the prior extension.

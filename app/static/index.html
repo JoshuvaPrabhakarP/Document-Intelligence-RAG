@@ -8,66 +8,107 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="app">
+<div class="app-shell">
 
   <header class="app-header">
-    <h1>Document Intelligence</h1>
-    <p class="subtitle">Upload a receipt. Ask questions. Find answers with sources.</p>
+    <div class="app-header-inner">
+      <div class="brand-icon" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.7">
+          <path d="M7 3h7l5 5v13a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" stroke-linejoin="round"/>
+          <path d="M14 3v5h5" stroke-linejoin="round"/>
+          <path d="M8.5 13h7M8.5 16h7M8.5 10h3" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Document Intelligence</h1>
+        <p class="subtitle">Answers grounded in your documents.</p>
+      </div>
+    </div>
   </header>
 
-  <nav class="tabs" aria-label="Choose a mode">
-    <button type="button" class="tab active" id="tab-demo" role="tab" aria-selected="true" aria-controls="panel-demo">
-      Try Sample Receipts
-    </button>
-    <button type="button" class="tab" id="tab-upload" role="tab" aria-selected="false" aria-controls="panel-upload">
-      Upload Your Documents
-    </button>
-  </nav>
+  <div class="app-main">
+    <div class="workspace">
 
-  <main>
-    <section id="panel-demo" role="tabpanel" aria-labelledby="tab-demo">
-      <p class="mode-description">
-        These are synthetic sample receipts built for this demo, not real documents —
-        a quick way to try the system without uploading anything of your own.
-      </p>
-      <div class="chips" id="demo-chips" aria-label="Suggested questions"></div>
-    </section>
+      <!-- Left column: mode selection + document source -->
+      <div class="col-left">
+        <div class="card">
+          <nav class="segmented-tabs" aria-label="Choose a mode">
+            <button type="button" class="tab active" id="tab-demo" role="tab" aria-selected="true" aria-controls="panel-demo">
+              Try Sample Receipts
+            </button>
+            <button type="button" class="tab" id="tab-upload" role="tab" aria-selected="false" aria-controls="panel-upload">
+              Upload Your Documents
+            </button>
+          </nav>
 
-    <section id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" hidden>
-      <div class="upload-dropzone" id="dropzone" role="button" tabindex="0"
-           aria-label="Upload a receipt: drag and drop a file here, or press Enter to browse your files">
-        <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M12 16V4M12 4l-4 4M12 4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <p><strong>Drag and drop</strong> a receipt here, or <span class="link">click to browse</span></p>
-        <p class="hint">JPG, PNG, or PDF · up to 10MB · up to 20 pages · processed locally (no cloud OCR service) · automatically deleted after 30 minutes or when cleared</p>
-        <input type="file" id="file-input" class="sr-only" accept=".jpg,.jpeg,.png,.pdf" tabindex="-1" aria-hidden="true">
+          <section id="panel-demo" role="tabpanel" aria-labelledby="tab-demo">
+            <p class="mode-description">
+              Synthetic sample receipts built for this demo, not real documents —
+              a quick way to try the system without uploading anything of your own.
+            </p>
+            <div class="chips" id="demo-chips" aria-label="Suggested questions"></div>
+          </section>
+
+          <section id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" hidden>
+            <div class="upload-dropzone" id="dropzone" role="button" tabindex="0"
+                 aria-label="Upload a receipt: drag and drop a file here, or press Enter to browse your files">
+              <div class="upload-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8">
+                  <path d="M12 16V4M12 4l-4 4M12 4l4 4" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <p><strong>Drag and drop</strong> a receipt here, or <span class="link">click to browse</span></p>
+              <p class="hint">JPG, PNG, or PDF · up to 10MB · up to 20 pages<br>Processed locally (no cloud OCR service) · automatically deleted after 30 minutes or when cleared</p>
+              <input type="file" id="file-input" class="sr-only" accept=".jpg,.jpeg,.png,.pdf" tabindex="-1" aria-hidden="true">
+            </div>
+
+            <div id="upload-status" class="status-banner hidden" role="status" aria-live="polite"></div>
+
+            <div class="documents-section">
+              <div class="documents-header">
+                <h2>Your documents</h2>
+                <button type="button" class="btn-ghost" id="clear-btn">Clear documents</button>
+              </div>
+              <div id="file-list" class="file-cards" aria-live="polite">
+                <p class="empty-state">No documents yet — drag a receipt above or click to browse.</p>
+              </div>
+            </div>
+
+            <div class="chips" id="upload-chips" aria-label="Suggested questions"></div>
+          </section>
+        </div>
       </div>
 
-      <div id="upload-status" class="status-banner hidden" role="status" aria-live="polite"></div>
+      <!-- Right column: question composer + answer -->
+      <div class="col-right">
+        <div class="card ask-box">
+          <div class="card-heading">
+            <span class="accent-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="11" cy="11" r="7"/>
+                <path d="M21 21l-4.3-4.3" stroke-linecap="round"/>
+              </svg>
+            </span>
+            Ask a question
+          </div>
+          <label for="question" class="sr-only">Your question</label>
+          <textarea id="question" placeholder="Ask a question about the sample receipts…"></textarea>
+          <div class="ask-row">
+            <button type="button" class="btn-primary" id="ask-btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M4 12h14M12 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span id="ask-btn-label">Ask document</span>
+            </button>
+          </div>
+        </div>
 
-      <div class="documents-section">
-        <div class="documents-header">
-          <h2>Your documents</h2>
-          <button type="button" class="btn-ghost" id="clear-btn">Clear documents</button>
-        </div>
-        <div id="file-list" class="file-cards" aria-live="polite">
-          <p class="empty-state">No documents yet — drag a receipt above or click to browse.</p>
-        </div>
+        <div id="result" aria-live="polite"></div>
       </div>
 
-      <div class="chips" id="upload-chips" aria-label="Suggested questions"></div>
-    </section>
-
-    <div class="ask-box">
-      <label for="question" class="sr-only">Your question</label>
-      <textarea id="question" placeholder="Ask a question about the sample receipts…"></textarea>
-      <button type="button" class="btn-primary" id="ask-btn">Ask</button>
     </div>
-
-    <div id="result" aria-live="polite"></div>
-  </main>
+  </div>
 
   <footer>
     Answers are generated locally from retrieved document text and may be incomplete or wrong — verify anything important against the source excerpt.
