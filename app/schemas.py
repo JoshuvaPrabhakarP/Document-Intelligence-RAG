@@ -11,6 +11,10 @@ class QueryRequest(BaseModel):
         default="demo",
         description="'demo' (synthetic sample receipts) or 'upload' (this session's uploaded receipts only).",
     )
+    workflow: str = Field(
+        default="standard",
+        description="'standard' (direct retrieve-then-generate) or 'agent' (LangGraph tool-calling workflow, Milestone 3).",
+    )
 
 
 class SourceReference(BaseModel):
@@ -18,6 +22,18 @@ class SourceReference(BaseModel):
     source: str
     score: float
     excerpt: str
+
+
+class ExecutionStep(BaseModel):
+    """One node/tool execution in an agent run — metadata only (node name,
+    tool name, duration, a short outcome description). Never raw document
+    content or full tool arguments, per the 'keep sensitive tool arguments
+    out of persistent logs' requirement — this is a response field shown to
+    the requesting user for this one run, not written to any log."""
+    node: str
+    tool: str | None
+    duration_ms: float
+    detail: str
 
 
 class QueryResponse(BaseModel):
@@ -29,6 +45,10 @@ class QueryResponse(BaseModel):
     generation_latency_ms: float | None
     config: str
     error: str | None = None
+    # Agent-workflow-only fields (None/omitted for workflow="standard"):
+    route: str | None = None
+    clarification_question: str | None = None
+    execution_trace: list[ExecutionStep] | None = None
 
 
 class HealthResponse(BaseModel):

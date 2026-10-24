@@ -19,9 +19,15 @@ const MAX_PDF_PAGES = 20;
 
 const state = {
   mode: "demo",
+  workflow: "standard",
   uploading: false,
   asking: false,
   lastResult: { demo: null, upload: null },
+};
+
+const WORKFLOW_HINTS = {
+  standard: "Retrieves once, then generates a grounded answer.",
+  agent: "Lets the model search/fetch sources itself, assess the evidence, and ask for clarification if your question is ambiguous.",
 };
 
 const el = {
@@ -29,6 +35,9 @@ const el = {
   tabUpload: document.getElementById("tab-upload"),
   panelDemo: document.getElementById("panel-demo"),
   panelUpload: document.getElementById("panel-upload"),
+  wfStandard: document.getElementById("wf-standard"),
+  wfAgent: document.getElementById("wf-agent"),
+  workflowHint: document.getElementById("workflow-hint"),
   demoChips: document.getElementById("demo-chips"),
   uploadChips: document.getElementById("upload-chips"),
   dropzone: document.getElementById("dropzone"),
@@ -119,6 +128,20 @@ function switchMode(mode) {
 
 el.tabDemo.addEventListener("click", () => switchMode("demo"));
 el.tabUpload.addEventListener("click", () => switchMode("upload"));
+
+// ---------- workflow toggle (Standard RAG / Agent workflow) ----------
+
+function switchWorkflow(workflow) {
+  state.workflow = workflow;
+  el.wfStandard.classList.toggle("active", workflow === "standard");
+  el.wfAgent.classList.toggle("active", workflow === "agent");
+  el.wfStandard.setAttribute("aria-checked", String(workflow === "standard"));
+  el.wfAgent.setAttribute("aria-checked", String(workflow === "agent"));
+  el.workflowHint.textContent = WORKFLOW_HINTS[workflow];
+}
+
+el.wfStandard.addEventListener("click", () => switchWorkflow("standard"));
+el.wfAgent.addEventListener("click", () => switchWorkflow("agent"));
 
 // ---------- chips ----------
 
@@ -328,7 +351,7 @@ async function ask() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ question, top_k: 5, mode: state.mode }),
+      body: JSON.stringify({ question, top_k: 5, mode: state.mode, workflow: state.workflow }),
     });
     const data = await res.json();
 
@@ -410,6 +433,22 @@ function renderResult(result) {
   }
 
   const data = result.data;
+
+  if (data.route === "clarify") {
+    const card = document.createElement("div");
+    card.className = "result-card warn";
+    const status = document.createElement("div");
+    status.className = "result-status";
+    status.appendChild(icon("question"));
+    status.appendChild(document.createTextNode("Needs clarification"));
+    card.appendChild(status);
+    card.appendChild(text("div", data.clarification_question || "Could you clarify your question?", "result-answer"));
+    card.appendChild(text("div", "Type your answer in the question box above and press Ask again.", "clarify-hint"));
+    el.result.appendChild(card);
+    if (data.execution_trace) el.result.appendChild(buildExecutionDetails(data));
+    return;
+  }
+
   const sufficient = data.has_sufficient_evidence !== false;
   const card = document.createElement("div");
   card.className = "result-card " + (sufficient ? "success" : "warn");
@@ -428,6 +467,7 @@ function renderResult(result) {
   }
 
   el.result.appendChild(buildTechDetails(data));
+  if (data.execution_trace) el.result.appendChild(buildExecutionDetails(data));
 }
 
 function parsePage(chunkId) {
@@ -476,6 +516,34 @@ function buildTechDetails(data) {
     grid.appendChild(text("div", String(value), ""));
   });
   details.appendChild(grid);
+  return details;
+}
+
+// Agent-workflow-only: node names, tool names, durations, and the route
+// outcome for one agent run. Metadata only — the server never includes
+// raw document content or full tool arguments here (app/agent/graph.py's
+// _trace() builds this from short, fixed-shape detail strings).
+function buildExecutionDetails(data) {
+  const details = document.createElement("details");
+  details.className = "tech-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "Execution details";
+  details.appendChild(summary);
+
+  const table = document.createElement("div");
+  table.className = "trace-table";
+  ["Node", "Tool", "Duration", "Outcome"].forEach((h) => table.appendChild(text("div", h, "trace-head")));
+  data.execution_trace.forEach((step) => {
+    table.appendChild(text("div", step.node, "trace-cell"));
+    table.appendChild(text("div", step.tool || "—", "trace-cell"));
+    table.appendChild(text("div", `${step.duration_ms.toFixed(0)} ms`, "trace-cell"));
+    table.appendChild(text("div", step.detail, "trace-cell trace-detail"));
+  });
+  details.appendChild(table);
+
+  if (data.route) {
+    details.appendChild(text("div", `Route taken: ${data.route}`, "trace-route"));
+  }
   return details;
 }
 

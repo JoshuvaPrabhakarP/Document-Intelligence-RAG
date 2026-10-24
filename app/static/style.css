@@ -297,6 +297,33 @@ body::after { background: var(--violet-500); bottom: -240px; right: -220px; }
 .chip:disabled { opacity: 0.5; cursor: not-allowed; }
 .chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
+/* ---------- Workflow toggle (compact — Standard RAG / Agent workflow) ---------- */
+.workflow-toggle {
+  display: inline-flex; gap: 3px;
+  background: var(--lavender-100);
+  border-radius: 999px;
+  padding: 3px;
+  margin-bottom: 6px;
+}
+.wf-btn {
+  appearance: none; border: none; background: transparent;
+  padding: 6px 12px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--ink-muted);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.wf-btn:hover { color: var(--navy-900); }
+.wf-btn.active {
+  background: var(--grad-brand);
+  color: white;
+  box-shadow: 0 3px 8px -2px rgba(124, 58, 237, 0.4);
+}
+.wf-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.workflow-hint { color: var(--ink-faint); font-size: 0.76rem; margin: 0 0 12px; }
+
 /* ---------- Ask box ---------- */
 .ask-box textarea {
   width: 100%; min-height: 76px; font-size: 1rem; padding: 14px; border-radius: var(--radius);
@@ -356,6 +383,19 @@ body::after { background: var(--violet-500); bottom: -240px; right: -220px; }
   display: grid; grid-template-columns: auto 1fr; gap: 4px 10px;
   background: var(--lavender-bg); border-radius: var(--radius-sm); padding: 10px 12px;
 }
+
+.clarify-hint { color: var(--ink-faint); font-size: 0.82rem; margin-top: 8px; font-style: italic; }
+
+/* ---------- Execution details (agent workflow) ---------- */
+.trace-table {
+  margin-top: 8px; font-size: 0.76rem; color: var(--ink-faint);
+  display: grid; grid-template-columns: auto auto auto 1fr; gap: 5px 12px;
+  background: var(--lavender-bg); border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.trace-head { font-weight: 800; color: var(--violet-600); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.03em; }
+.trace-cell { white-space: nowrap; }
+.trace-cell.trace-detail { white-space: normal; color: var(--ink-muted); }
+.trace-route { margin-top: 10px; font-size: 0.76rem; color: var(--ink-faint); font-weight: 700; }
 
 /* ---------- Footer ---------- */
 footer {

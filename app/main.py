@@ -16,7 +16,10 @@ from fastapi import FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.agent.graph import get_graph
+from app.agent.state import new_state, resume_state
 from app.config import get_settings
+from app.excerpt import select_excerpt
 from app.rag_pipeline import RAGPipeline
 from app.schemas import (
     HealthResponse,
@@ -31,7 +34,7 @@ from app.schemas import (
 from app.upload import retriever_cache
 from app.upload.extraction import ExtractionError, OCRUnavailable, ProcessingTimeout, extract_pages
 from app.upload.indexing import append_chunks, rebuild_index
-from app.upload.session import SessionManager, UploadedFile, new_session_id
+from app.upload.session import PendingClarification, UploadedFile, new_session_id, sessions
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
@@ -40,7 +43,9 @@ app = FastAPI(title="Document Intelligence RAG — Demo API")
 
 settings = get_settings()
 pipeline = RAGPipeline(settings)
-sessions = SessionManager(base_dir=settings.upload_dir, ttl_minutes=settings.upload_session_ttl_minutes)
+# `sessions` is the shared singleton defined in app/upload/session.py (not
+# constructed here) specifically so app/agent/tools.py can import the SAME
+# instance without a circular import — see that module's comment.
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -104,10 +109,87 @@ def sample_questions():
     return {"config": settings.app_config, "questions": DEMO_SAMPLE_QUESTIONS}
 
 
+def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
+    """Runs the Milestone 3 LangGraph workflow for one request and adapts
+    its result into the same response shape pipeline.answer()/
+    answer_from_retriever() produce (plus the agent-only route/
+    clarification_question/execution_trace fields), so the frontend and
+    QueryResponse schema don't need a second shape to handle.
+
+    Clarification state is looked up / stored keyed by session_id, reusing
+    the SAME per-session store uploads already use (app/upload/session.py)
+    — so "clear uploaded receipts" or session expiry wipes any pending
+    clarification for free, with no separate cleanup path to maintain.
+    """
+    pending = sessions.get_pending_clarification(session_id) if session_id else None
+    if pending:
+        original_question = pending.original_question
+        state = resume_state(
+            original_question=pending.original_question,
+            clarification_answer=question,
+            prior_messages=pending.messages,
+            prior_retrieved_passages=pending.retrieved_passages,
+            session_mode=mode,
+            session_id=session_id,
+        )
+    else:
+        original_question = question
+        state = new_state(question, mode, session_id)
+
+    result = get_graph().invoke(state)
+
+    if result["route"] == "clarify" and session_id:
+        sessions.set_pending_clarification(session_id, PendingClarification(
+            original_question=original_question,
+            clarification_question=result["clarification_question"] or "",
+            messages=result["messages"],
+            retrieved_passages=result["retrieved_passages"],
+        ))
+    elif session_id:
+        sessions.clear_pending_clarification(session_id)
+
+    sources = [
+        {
+            "chunk_id": passage["chunk_id"],
+            "source": passage["source"],
+            "score": passage.get("score") or 0.0,
+            "excerpt": select_excerpt(passage["text"], original_question, result["answer"]),
+        }
+        for pid in result["cited_passage_ids"]
+        if (passage := result["retrieved_passages"].get(pid)) is not None
+    ]
+
+    # No separate rerank step in the agent workflow (reranking still
+    # happens, if configured, inside HybridRetriever's own search() call —
+    # it's just not a distinct timed phase here the way it is in the
+    # standard pipeline), so rerank_latency_ms is deliberately None rather
+    # than a fabricated 0.
+    tool_ms = sum(t["duration_ms"] for t in result["execution_trace"] if t["node"] == "tools")
+    model_ms = sum(t["duration_ms"] for t in result["execution_trace"] if t["node"] in ("agent", "assess_evidence"))
+
+    has_evidence = {"answer": True, "insufficient_evidence": False}.get(result["route"])
+
+    return {
+        "answer": result["answer"],
+        "sources": sources,
+        "has_sufficient_evidence": has_evidence,
+        "retrieval_latency_ms": tool_ms,
+        "rerank_latency_ms": None,
+        "generation_latency_ms": model_ms,
+        "error": result["error"],
+        "route": result["route"],
+        "clarification_question": result["clarification_question"],
+        "execution_trace": result["execution_trace"],
+    }
+
+
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest, http_request: Request, response: Response):
     start = time.monotonic()
+    if request.workflow not in ("standard", "agent"):
+        raise HTTPException(status_code=422, detail=f"Unknown workflow {request.workflow!r}. Use 'standard' or 'agent'.")
     try:
+        session_id = None
         if request.mode == "upload":
             session_id = _get_session_id(http_request, response)
             files = sessions.list_files(session_id)
@@ -117,22 +199,32 @@ def query(request: QueryRequest, http_request: Request, response: Response):
                     detail="No receipts uploaded in this session yet. Upload a file first, "
                            "or switch to demo mode.",
                 )
+        elif request.mode == "demo":
+            if request.workflow == "agent":
+                # Clarification state needs a per-browser identity even in
+                # demo mode, so the agent path always has a session_id —
+                # standard demo-mode queries still never set one.
+                session_id = _get_session_id(http_request, response)
+        else:
+            raise HTTPException(status_code=422, detail=f"Unknown mode {request.mode!r}. Use 'demo' or 'upload'.")
+
+        if request.workflow == "agent":
+            result = _run_agent_query(request.question, request.mode, session_id)
+        elif request.mode == "upload":
             retriever = retriever_cache.get_retriever(
                 session_id, str(sessions.index_dir(session_id)), str(sessions.chunks_path(session_id))
             )
             result = pipeline.answer_from_retriever(
                 request.question, retriever, top_k=request.top_k, use_reranker=request.use_reranker
             )
-        elif request.mode == "demo":
+        else:
             result = pipeline.answer(
                 request.question, top_k=request.top_k, use_reranker=request.use_reranker
             )
-        else:
-            raise HTTPException(status_code=422, detail=f"Unknown mode {request.mode!r}. Use 'demo' or 'upload'.")
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Unhandled error answering query (mode=%s)", request.mode)
+        logger.exception("Unhandled error answering query (mode=%s, workflow=%s)", request.mode, request.workflow)
         raise HTTPException(
             status_code=503,
             detail="The retrieval/answer pipeline is temporarily unavailable. Please try again.",
@@ -142,8 +234,8 @@ def query(request: QueryRequest, http_request: Request, response: Response):
     # Deliberately logs only metadata (mode, latency, evidence flag) — never
     # the question text or any retrieved/extracted content, per the
     # "keep uploads and extracted content out of ... application logs" requirement.
-    logger.info("query answered in %.0fms (mode=%s, evidence=%s)",
-                elapsed_ms, request.mode, result.get("has_sufficient_evidence"))
+    logger.info("query answered in %.0fms (mode=%s, workflow=%s, route=%s, evidence=%s)",
+                elapsed_ms, request.mode, request.workflow, result.get("route"), result.get("has_sufficient_evidence"))
 
     return QueryResponse(config=request.mode, **result)
 

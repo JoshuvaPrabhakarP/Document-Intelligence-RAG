@@ -33,12 +33,26 @@ class UploadedFile:
     warning: str | None = None  # e.g. "OCR unavailable, page 2 has no extractable text"
 
 
+@dataclass
+class PendingClarification:
+    """A paused agent run awaiting the user's answer to a clarifying
+    question — Milestone 3. Lives inside the SAME per-session dict as
+    uploaded files, so clearing or expiring a session (both already-existing
+    code paths) wipes this for free, with no separate cleanup mechanism to
+    forget."""
+    original_question: str
+    clarification_question: str
+    messages: list[dict]  # the agent's message history at the point it paused
+    retrieved_passages: dict  # passages already gathered, so a resume doesn't re-search from scratch
+
+
 class SessionManager:
     def __init__(self, base_dir: str, ttl_minutes: int):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.ttl_seconds = ttl_minutes * 60
-        # session_id -> {"created_at": float, "files": {file_id: UploadedFile}}
+        # session_id -> {"created_at": float, "files": {file_id: UploadedFile},
+        #                "pending_clarification": PendingClarification | None}
         self._sessions: dict[str, dict] = {}
 
     def _session_dir(self, session_id: str) -> Path:
@@ -47,7 +61,9 @@ class SessionManager:
     def touch_or_create(self, session_id: str) -> None:
         self.sweep_expired()
         if session_id not in self._sessions:
-            self._sessions[session_id] = {"created_at": time.time(), "files": {}}
+            self._sessions[session_id] = {
+                "created_at": time.time(), "files": {}, "pending_clarification": None,
+            }
             (self._session_dir(session_id) / "files").mkdir(parents=True, exist_ok=True)
 
     def is_known(self, session_id: str) -> bool:
@@ -94,6 +110,36 @@ class SessionManager:
             self.clear_session(sid)
         return expired
 
+    # ---- Milestone 3: clarification state, isolated per session ----
+
+    def set_pending_clarification(self, session_id: str, pending: "PendingClarification") -> None:
+        self.touch_or_create(session_id)
+        self._sessions[session_id]["pending_clarification"] = pending
+
+    def get_pending_clarification(self, session_id: str) -> "PendingClarification | None":
+        self.sweep_expired()
+        session = self._sessions.get(session_id)
+        return session["pending_clarification"] if session else None
+
+    def clear_pending_clarification(self, session_id: str) -> None:
+        if session_id in self._sessions:
+            self._sessions[session_id]["pending_clarification"] = None
+
 
 def new_session_id() -> str:
     return str(uuid.uuid4())
+
+
+# Module-level singleton. Deliberately instantiated HERE (not in app/main.py)
+# so app/agent/tools.py can import it directly without creating a circular
+# import (main.py -> agent/graph.py -> agent/tools.py -> main.py would be
+# circular; main.py -> agent/... -> upload/session.py is not, since this
+# module imports nothing from app.main or app.agent).
+def _build_default_manager() -> SessionManager:
+    from app.config import get_settings
+
+    settings = get_settings()
+    return SessionManager(base_dir=settings.upload_dir, ttl_minutes=settings.upload_session_ttl_minutes)
+
+
+sessions = _build_default_manager()

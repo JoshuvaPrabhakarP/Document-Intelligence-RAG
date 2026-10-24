@@ -92,6 +92,16 @@
             </span>
             Ask a question
           </div>
+          <div class="workflow-toggle" role="radiogroup" aria-label="Answering workflow">
+            <button type="button" class="wf-btn active" id="wf-standard" role="radio" aria-checked="true">
+              Standard RAG
+            </button>
+            <button type="button" class="wf-btn" id="wf-agent" role="radio" aria-checked="false">
+              Agent workflow
+            </button>
+          </div>
+          <p class="workflow-hint" id="workflow-hint">Retrieves once, then generates a grounded answer.</p>
+
           <label for="question" class="sr-only">Your question</label>
           <textarea id="question" placeholder="Ask a question about the sample receipts…"></textarea>
           <div class="ask-row">
