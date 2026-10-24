@@ -208,3 +208,34 @@ pytest tests/ -v
 New: `app/upload/` (5 files), `tests/test_upload.py`.
 Modified: `app/main.py`, `app/rag_pipeline.py`, `app/schemas.py`, `app/config.py`, `.env.example`, `app/static/index.html`, `PROGRESS.md`.
 Untouched: everything under `scripts/`, all research and demo corpus data, `PROJECT_GRAPH_REPORT.md`, `README.md`.
+
+## Milestone 2 extension — better source citations (complete)
+
+Manual testing (with your own, non-synthetic document) surfaced a real gap: the "supporting excerpt" shown with each answer was just the first 200 characters of the retrieved chunk — for a long document, that's often an unrelated header, not the passage the answer actually came from. Reported case: a payment-method question should show the payment-options lines, not the top of the page.
+
+### Fix
+
+`app/excerpt.py` (new, ~45 lines) — scores each line of the chunk by lexical word-overlap against the generated answer (weighted higher) and the question (weighted lower, and the only signal available in the no-answer/error case), then returns a short window of context around the best-matching line instead of the first N characters. No extra embedding or LLM call — pure Python, no added latency or cost. Wired into `app/rag_pipeline.py::_format_sources`, which now takes `question`/`answer` instead of just the retrieved results.
+
+**Why answer-weighted, not question-only:** the generated answer text usually repeats the exact extracted value (a dollar amount, a name, a payment method) almost verbatim from the source, which is a much more precise grounding signal than the question's generic wording alone.
+
+### Verified — real document, not just the unit tests
+
+Per your instruction, tested on a **synthetic** document only (fabricated clinic-visit-style receipt, explicitly labeled "NOT A REAL PATIENT," fake name/dates/amounts) — never touched, read, or referenced anything from your actual upload, which went directly from your browser to the session-isolated server and was never accessible to me in the first place.
+
+```
+Q: "What payment method was used?"
+A: "Mastercard ending in 4477."
+excerpt (NEW): "Payment methods accepted: Visa, Mastercard, Cash, HSA
+                Paid via: Mastercard ending in 4477
+                Amount paid: 200.00"
+```
+Old behavior would have shown the clinic's name/address block instead — confirmed via a unit test (`test_excerpt_centers_on_answer_relevant_line_not_document_start`) that explicitly asserts the facility header is NOT in the new excerpt.
+
+**Insufficient-evidence still verified correct** on the same document: asked about information genuinely absent (date of birth, insurance policy number) → `"I don't know."`, `has_sufficient_evidence: false`.
+
+5 new unit tests (`tests/test_excerpt.py`) + full suite re-run: **30/30 passing**.
+
+### Known limitation
+
+Lexical overlap only — no semantic matching. In the insufficient-evidence test above, the excerpt shown was the "Date of service" line (matched on the shared word "date" with "date of birth"), not a deeper match — a fair, explainable miss given the approach, not a bug, but worth knowing: a semantically-themed question with no exact keyword overlap could still pick an excerpt that's lexically-close-but-conceptually-off. Not pursued further here since it doesn't affect the actual answer/evidence-flag correctness, only which excerpt is displayed alongside a correctly-flagged "I don't know."

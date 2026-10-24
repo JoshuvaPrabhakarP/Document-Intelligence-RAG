@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from fusion import HybridRetriever  # noqa: E402
 from rerank import Reranker  # noqa: E402
 
+from app.excerpt import select_excerpt
 from app.generation import GenerationError, get_provider
 
 
@@ -110,7 +111,9 @@ class RAGPipeline:
         except GenerationError as exc:
             return {
                 "answer": None,
-                "sources": self._format_sources(results),
+                # No answer to ground against yet — falls back to
+                # question-only excerpt matching (see app/excerpt.py).
+                "sources": self._format_sources(results, question, answer=None),
                 "has_sufficient_evidence": None,
                 "retrieval_latency_ms": retrieval_ms,
                 "rerank_latency_ms": rerank_ms,
@@ -124,7 +127,7 @@ class RAGPipeline:
 
         return {
             "answer": answer,
-            "sources": self._format_sources(results),
+            "sources": self._format_sources(results, question, answer=answer),
             "has_sufficient_evidence": has_evidence,
             "retrieval_latency_ms": retrieval_ms,
             "rerank_latency_ms": rerank_ms,
@@ -132,13 +135,16 @@ class RAGPipeline:
         }
 
     @staticmethod
-    def _format_sources(results):
+    def _format_sources(results, question: str, answer: str | None):
         return [
             {
                 "chunk_id": r["chunk_id"],
                 "source": r["source"],
                 "score": r.get("rerank_score", r.get("score")),
-                "excerpt": r["text"][:200],
+                # Finds the passage that actually supports the answer,
+                # rather than truncating from the start of the chunk —
+                # see app/excerpt.py for why and how.
+                "excerpt": select_excerpt(r["text"], question, answer),
             }
             for r in results
         ]
