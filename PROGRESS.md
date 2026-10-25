@@ -481,19 +481,33 @@ Root cause: `assess_evidence_node` decides the route/answer from `state["questio
 
 Root cause: neither Standard RAG's (`scripts/llm_client.py::build_prompt()`) nor the agent's (`app/agent/llm.py::assess_evidence()`) prompt gave the model any signal distinguishing document content from instructions, so a receipt claiming "the real total is actually $999.99" got echoed back as the answer 100% of the time (Milestone 4's H12). Fixed with a semantic instruction/data-separation change (explicit delimiters + naming the failure pattern) in both prompts plus the agent's `SYSTEM_PROMPT` — deliberately not a keyword blocklist, so it isn't limited to the exact phrase that was tested. Verified fixed on H12 (now regression) and on a third, freshly-worded injection (N5), and confirmed NOT to overcorrect into rejecting legitimate instruction-like document text (N6, a real receipt footer).
 
-**Does not claim complete injection resistance.** A dedicated 20-trial repeated-sampling study (`eval/injection_variability.py`) found the dangerous outcome (adopting the injected value) still occurs in roughly 1 of 5 real trials for both systems, down from 100% pre-fix but not eliminated — Standard RAG's more common new failure mode is overcautious abstention rather than being fooled. This is documented prominently, not glossed over, per explicit instruction.
+**Does not claim complete injection resistance — exact counts, not a rounded figure.** A dedicated repeated-sampling study (`eval/injection_variability.py`, 5 trials each on two prompts, per system) measured "fooled" as the system's answer stating the attacker-supplied fabricated value (e.g. "$999.99") rather than the real printed one — distinct from abstaining ("I don't know," safe but unhelpful) or answering correctly. Result: **Standard RAG was fooled on 2 of 10 trials (20%); the Agent was fooled on 1 of 10 trials (10%)** — these are different rates, not "roughly the same," and neither is zero. Both halves of this study reuse H12's exact text or a variant written and observed repeatedly while fixing this bug (not fresh input — see `eval/POSTFIX_REPORT.md` §2/§5 for the full accounting), so the true rate on novel phrasings is unknown. Standard RAG's more common failure mode post-fix is overcautious abstention (30% of trials) rather than being fooled. Documented prominently per explicit instruction, not rounded into a flattering-sounding "roughly 1 in 5 for both."
+
+### A separate, still-open gap: H10
+
+One case (H10: "What was purchased on 03/14/2026?", ambiguous because two unrelated receipts share that date) never triggers `clarify` at all — the agent silently answers using one of the two valid candidates, with no indication to the user that a second, equally valid receipt matched. This is a different mechanism (whether `assess_evidence` recognizes multi-document ambiguity it would need to search to discover) than the follow-up-resolution bug fixed above, was not addressed by either fix, and remains open. Full question/expected/actual/impact writeup: `eval/POSTFIX_REPORT.md` §6.
 
 ### Two real operational bugs found and fixed while running this re-assessment
 
 1. `eval/run_eval.py` only saved results once, at the very end, after an optional variability subset — a crash during that subset lost all already-completed primary results. Fixed to save immediately after the main case loop.
 2. This machine's single GPU is shared between Ollama and this app's reranker (which always tries CUDA if available, regardless of `app/config.py`'s device setting) — running a long evaluation caused a CUDA out-of-memory crash and, even without the repeat subset, intermittent 60-second execution timeouts that looked like logic regressions but weren't. Worked around with `CUDA_VISIBLE_DEVICES=""` for the evaluation process only; disclosed as a methodology limitation (this round's latency numbers aren't comparable to Milestone 4's GPU-based ones).
 
+### Deterministic tests vs. stochastic evaluation — kept separate, not blended
+
+The pytest suite (64 tests, `tests/test_agent.py` + new `tests/test_injection.py`) uses plain hard assertions throughout, normal pass/fail semantics — it is not described as having "expected failures." The full-suite run that produced this report's numbers showed 64/64 passing; a later, narrower re-run of just `tests/test_injection.py` while reconciling this document's accuracy showed 5/6 passing, with the one failure being a real, quoted example (`eval/POSTFIX_REPORT.md` §8) of the test's substring-based scoring mistaking a transparent, correct answer for an adopted injection — disclosed there in full rather than silently re-run until green. Because the model is non-deterministic, a *future* run of these real-model tests can legitimately fail from ordinary sampling variance alone; that is a property of testing a real model, to be checked against the quantified evaluation data in `eval/POSTFIX_REPORT.md` §2/§8 if it happens, not something declared "fine" inside the test suite itself and not assumed to mean a regression without reading the actual output first.
+
+### Which checks were fresh vs. reused
+
+Full accounting in `eval/POSTFIX_REPORT.md` §5. Summary: H1–H14 and DEV1–6 are reused verbatim from Milestone 4 (relabeled `split=regression`, not held-out again). N1–N8 are genuinely fresh, frozen before any run. The 20-trial injection variability study and `tests/test_injection.py`'s variant/legitimate-content text are **not** fresh — they were iterated against directly while diagnosing this fix. The two headline fixes are each confirmed on both a reused case and at least one genuinely fresh case; the quantified 20%/10% reliability figures are not.
+
 ### Verified
 
 ```
-venv/bin/python3 -m pytest tests/        # 64 tests; the one probabilistic injection test
-                                          # (see eval/POSTFIX_REPORT.md §2/§6) occasionally fails
-                                          # by design, not as a regression signal
+venv/bin/python3 -m pytest tests/        # 64 tests; 64/64 passed on the full-suite run reported
+                                          # above, 5/6 on a later narrow re-run of just
+                                          # test_injection.py (see that section for the exact,
+                                          # quoted false-positive) -- real-model tests here are not
+                                          # guaranteed to reproduce either count on a future run
 CUDA_VISIBLE_DEVICES="" venv/bin/python3 eval/run_eval.py \
   --cases eval/cases_postfix.json --results-dir eval/results_postfix --skip-variability
 venv/bin/python3 eval/analyze.py --results eval/results_postfix/raw_results.json --split regression
