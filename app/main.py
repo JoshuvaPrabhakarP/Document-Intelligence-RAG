@@ -20,6 +20,7 @@ from app.agent.graph import MAX_CLARIFICATION_ROUNDS, MAX_CUMULATIVE_TOOL_CALLS,
 from app.agent.state import new_state, resume_state
 from app.config import get_settings
 from app.excerpt import select_excerpt
+from app.ratelimit import ConcurrencyLimiter, RateLimiter
 from app.rag_pipeline import RAGPipeline
 from app.schemas import (
     HealthResponse,
@@ -46,6 +47,22 @@ pipeline = RAGPipeline(settings)
 # `sessions` is the shared singleton defined in app/upload/session.py (not
 # constructed here) specifically so app/agent/tools.py can import the SAME
 # instance without a circular import — see that module's comment.
+
+# Practical deployment limits (Milestone 5) — see app/ratelimit.py's
+# module docstring for why these are plain in-memory counters, not a
+# general-purpose rate-limiting library.
+query_rate_limiter = RateLimiter(settings.rate_limit_query_per_minute)
+upload_rate_limiter = RateLimiter(settings.rate_limit_upload_per_minute)
+heavy_request_limiter = ConcurrencyLimiter(settings.max_concurrent_heavy_requests)
+
+
+def _client_key(request: Request) -> str:
+    """Best-effort client identity for rate limiting — the direct peer
+    address. Deliberately does NOT trust X-Forwarded-For (a client could
+    set that header to anything); a real deployment behind a proxy that
+    sets it from a trusted source could extend this, but trusting it
+    unconditionally would make the per-IP limit trivially bypassable."""
+    return request.client.host if request.client else "unknown"
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -289,6 +306,11 @@ def query(request: QueryRequest, http_request: Request, response: Response):
     start = time.monotonic()
     if request.workflow not in ("standard", "agent"):
         raise HTTPException(status_code=422, detail=f"Unknown workflow {request.workflow!r}. Use 'standard' or 'agent'.")
+
+    if not query_rate_limiter.allow(_client_key(http_request)):
+        raise HTTPException(status_code=429, detail="Too many questions from this address. Please wait a minute and try again.")
+    if not heavy_request_limiter.try_acquire():
+        raise HTTPException(status_code=503, detail="The server is busy handling other requests right now. Please try again shortly.")
     try:
         session_id = None
         if request.mode == "upload":
@@ -321,6 +343,8 @@ def query(request: QueryRequest, http_request: Request, response: Response):
             status_code=503,
             detail="The retrieval/answer pipeline is temporarily unavailable. Please try again.",
         ) from exc
+    finally:
+        heavy_request_limiter.release()
 
     elapsed_ms = (time.monotonic() - start) * 1000
     # Deliberately logs only metadata (mode, latency, evidence flag) — never
@@ -336,94 +360,110 @@ def query(request: QueryRequest, http_request: Request, response: Response):
 def upload(file: UploadFile, http_request: Request, response: Response):
     session_id = _get_session_id(http_request, response)
 
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
+    if not upload_rate_limiter.allow(_client_key(http_request)):
+        raise HTTPException(status_code=429, detail="Too many uploads from this address. Please wait a minute and try again.")
+
+    existing_files = sessions.list_files(session_id)
+    if len(existing_files) >= settings.upload_max_files_per_session:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type {file.content_type!r}. Allowed: PDF, JPG, PNG.",
+            status_code=429,
+            detail=f"This session already has {len(existing_files)} documents, the limit per session. "
+                   "Clear your documents first, or ask about what's already uploaded.",
         )
 
-    content = file.file.read()
-    max_bytes = settings.upload_max_file_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File is {len(content) / 1e6:.1f}MB, which exceeds the "
-                   f"{settings.upload_max_file_mb}MB limit.",
-        )
-    if len(content) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-
+    if not heavy_request_limiter.try_acquire():
+        raise HTTPException(status_code=503, detail="The server is busy handling other requests right now. Please try again shortly.")
     try:
-        pages = extract_pages(
-            content, file.content_type,
-            max_pages=settings.upload_max_pdf_pages,
-            timeout_s=settings.upload_processing_timeout_s,
+        if file.content_type not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type {file.content_type!r}. Allowed: PDF, JPG, PNG.",
+            )
+
+        content = file.file.read()
+        max_bytes = settings.upload_max_file_mb * 1024 * 1024
+        if len(content) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is {len(content) / 1e6:.1f}MB, which exceeds the "
+                       f"{settings.upload_max_file_mb}MB limit.",
+            )
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+        try:
+            pages = extract_pages(
+                content, file.content_type,
+                max_pages=settings.upload_max_pdf_pages,
+                timeout_s=settings.upload_processing_timeout_s,
+            )
+        except ProcessingTimeout as exc:
+            raise HTTPException(status_code=408, detail=str(exc)) from exc
+        except OCRUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ExtractionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Safe, server-generated filename — the original name is kept ONLY as
+        # display/citation metadata, never used to construct a disk path, so
+        # there's no path-traversal or overwrite risk from a crafted filename.
+        file_id = str(uuid.uuid4())
+        ext = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png"}[file.content_type]
+        saved_path = sessions.files_dir(session_id) / f"{file_id}{ext}"
+        saved_path.parent.mkdir(parents=True, exist_ok=True)
+        saved_path.write_bytes(content)
+
+        # One chunk per page — gives page-level citation for multi-page PDFs.
+        # "source" carries the ORIGINAL filename (reusing the existing schema
+        # field the UI already displays) and "ground_truth" is left null/empty:
+        # there is no extraction model run on uploads, only retrieval+generation
+        # over the raw extracted text, per the stated scope.
+        new_chunks = []
+        overall_warning = None
+        for p in pages:
+            chunk_id = f"{file_id}_p{p['page_number']}"
+            new_chunks.append({
+                "chunk_id": chunk_id,
+                "doc_id": f"{file.filename}::page{p['page_number']}",
+                "source": file.filename,
+                "text": p["text"] or "(no extractable text on this page)",
+                "tokens": (p["text"] or "").split(),
+                "char_len": len(p["text"] or ""),
+                "word_len": len((p["text"] or "").split()),
+                "ground_truth": {"vendor": None, "date": None, "amount": None,
+                                  "all_vendors": [], "all_dates": [], "all_amounts": []},
+            })
+            if p.get("warning") and not overall_warning:
+                overall_warning = p["warning"]
+
+        append_chunks(sessions.chunks_path(session_id), new_chunks)
+        n_indexed = rebuild_index(
+            sessions.chunks_path(session_id), sessions.index_dir(session_id),
+            settings.embedding_model, settings.upload_embedding_device,
         )
-    except ProcessingTimeout as exc:
-        raise HTTPException(status_code=408, detail=str(exc)) from exc
-    except OCRUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ExtractionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        retriever_cache.invalidate(session_id)  # next query in this session picks up the new index
 
-    # Safe, server-generated filename — the original name is kept ONLY as
-    # display/citation metadata, never used to construct a disk path, so
-    # there's no path-traversal or overwrite risk from a crafted filename.
-    file_id = str(uuid.uuid4())
-    ext = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png"}[file.content_type]
-    saved_path = sessions.files_dir(session_id) / f"{file_id}{ext}"
-    saved_path.parent.mkdir(parents=True, exist_ok=True)
-    saved_path.write_bytes(content)
+        uploaded = UploadedFile(
+            file_id=file_id, original_filename=file.filename, saved_path=str(saved_path),
+            content_type=file.content_type, page_count=len(pages),
+            extracted_text="\n\n".join(p["text"] for p in pages),
+            chunk_ids=[c["chunk_id"] for c in new_chunks], warning=overall_warning,
+        )
+        sessions.add_file(session_id, uploaded)
 
-    # One chunk per page — gives page-level citation for multi-page PDFs.
-    # "source" carries the ORIGINAL filename (reusing the existing schema
-    # field the UI already displays) and "ground_truth" is left null/empty:
-    # there is no extraction model run on uploads, only retrieval+generation
-    # over the raw extracted text, per the stated scope.
-    new_chunks = []
-    overall_warning = None
-    for p in pages:
-        chunk_id = f"{file_id}_p{p['page_number']}"
-        new_chunks.append({
-            "chunk_id": chunk_id,
-            "doc_id": f"{file.filename}::page{p['page_number']}",
-            "source": file.filename,
-            "text": p["text"] or "(no extractable text on this page)",
-            "tokens": (p["text"] or "").split(),
-            "char_len": len(p["text"] or ""),
-            "word_len": len((p["text"] or "").split()),
-            "ground_truth": {"vendor": None, "date": None, "amount": None,
-                              "all_vendors": [], "all_dates": [], "all_amounts": []},
-        })
-        if p.get("warning") and not overall_warning:
-            overall_warning = p["warning"]
+        # Logs metadata only (filename, page/chunk counts) — never the
+        # extracted text itself.
+        logger.info("upload processed: file_id=%s pages=%d chunks=%d warning=%s",
+                    file_id, len(pages), len(new_chunks), bool(overall_warning))
 
-    append_chunks(sessions.chunks_path(session_id), new_chunks)
-    n_indexed = rebuild_index(
-        sessions.chunks_path(session_id), sessions.index_dir(session_id),
-        settings.embedding_model, settings.upload_embedding_device,
-    )
-    retriever_cache.invalidate(session_id)  # next query in this session picks up the new index
-
-    uploaded = UploadedFile(
-        file_id=file_id, original_filename=file.filename, saved_path=str(saved_path),
-        content_type=file.content_type, page_count=len(pages),
-        extracted_text="\n\n".join(p["text"] for p in pages),
-        chunk_ids=[c["chunk_id"] for c in new_chunks], warning=overall_warning,
-    )
-    sessions.add_file(session_id, uploaded)
-
-    # Logs metadata only (filename, page/chunk counts) — never the
-    # extracted text itself.
-    logger.info("upload processed: file_id=%s pages=%d chunks=%d warning=%s",
-                file_id, len(pages), len(new_chunks), bool(overall_warning))
-
-    return UploadResponse(
-        file_id=file_id, original_filename=file.filename, content_type=file.content_type,
-        page_count=len(pages),
-        pages=[PageExtraction(**p) for p in pages],
-        chunks_indexed=n_indexed, warning=overall_warning,
-    )
+        return UploadResponse(
+            file_id=file_id, original_filename=file.filename, content_type=file.content_type,
+            page_count=len(pages),
+            pages=[PageExtraction(**p) for p in pages],
+            chunks_indexed=n_indexed, warning=overall_warning,
+        )
+    finally:
+        heavy_request_limiter.release()
 
 
 @app.get("/session", response_model=SessionResponse)

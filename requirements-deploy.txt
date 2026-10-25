@@ -1,0 +1,52 @@
+# Deployment dependencies for the live app (app/ + the retrieval/rerank/
+# generation modules it imports from scripts/). Deliberately separate from
+# requirements.txt, which is the full research environment (langchain,
+# llama-index, ragas, ir_datasets, google-cloud-*, CUDA torch, etc.) --
+# none of that is imported by anything the deployed app actually runs.
+#
+# torch/torchvision/torchaudio are CPU-only builds, installed from
+# PyTorch's own CPU wheel index (see Dockerfile) -- NOT the +cu128 CUDA
+# build requirements.txt pins for the research GPU environment. Verified
+# against the official PyTorch "previous versions" install page
+# (https://pytorch.org/get-started/previous-versions/) before pinning:
+# the CPU wheel pattern is
+#   pip install torch==<ver> torchvision==<ver> torchaudio==<ver> \
+#       --index-url https://download.pytorch.org/whl/cpu
+# so torch/torchvision/torchaudio are intentionally NOT listed here --
+# the Dockerfile installs them in a separate step with that index, and
+# listing them again here with no index could make pip try to resolve a
+# different (CUDA) build from the default index.
+#
+# Versions below are exactly what this project has already run against
+# throughout development (pinned from the working venv), not guesses.
+
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-multipart==0.0.32
+python-dotenv==1.2.2
+httpx==0.28.1
+
+# Ollama client (OpenAI-compatible endpoint) -- see app/generation/, app/agent/llm.py
+openai==2.44.0
+
+# Agent workflow
+langgraph==1.2.8
+
+# Retrieval (scripts/fusion.py, bm25_retrieve.py, dense_retrieve.py, metadata_filter.py)
+faiss-cpu==1.14.3
+rank-bm25==0.2.2
+numpy==2.5.1
+
+# Embedding (app/upload/indexing.py) + reranking (scripts/rerank.py) -- CPU only
+sentence-transformers==5.6.0
+transformers==5.13.0
+tokenizers==0.22.2
+safetensors==0.8.0
+huggingface_hub==1.22.0
+
+# Upload extraction: PDF text + OCR fallback (app/upload/extraction.py)
+pymupdf==2.0
+pillow==12.3.0
+pytesseract==0.3.13

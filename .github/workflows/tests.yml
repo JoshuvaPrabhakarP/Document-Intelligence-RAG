@@ -1,0 +1,52 @@
+name: tests
+
+# Deterministic tests only. Real-model checks (tests/test_integration.py,
+# the real-Ollama sections of tests/test_agent.py and tests/test_injection.py,
+# and eval/run_eval.py / eval/injection_variability.py, which aren't pytest
+# files and are never invoked here) are NOT run in CI -- there is no Ollama
+# reachable from a GitHub-hosted runner. This is not a special CI-only
+# filter: every real-model test already self-skips when Ollama isn't
+# reachable (see each file's own `_ollama_available()` check), the same
+# mechanism that makes them skip cleanly on any machine without Ollama
+# running. Real-model evaluation stays a manual, deliberate, local step
+# (see PROGRESS.md / eval/*.md for how and when to run it) -- it is not
+# meant to run unattended on every push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Matches the Dockerfile's OCR setup exactly, so a CI pass means the
+      # same OCR path the deployed container will run was exercised with
+      # the real tesseract binary present (even though no current
+      # deterministic test asserts actual OCR'd text -- see the two
+      # file-validation tests in tests/test_upload.py that use an image).
+      - name: Install system dependencies (tesseract-ocr)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd
+
+      # CPU-only PyTorch, same index and versions as the Dockerfile and
+      # requirements-deploy.txt -- see that file's header comment for why
+      # this is a separate install step.
+      - name: Install CPU-only PyTorch
+        run: |
+          pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install application + test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run deterministic test suite
+        run: python -m pytest tests/ -v

@@ -1,0 +1,6 @@
+# Test-only additions on top of requirements-deploy.txt. Install both for
+# running the test suite (locally or in CI); requirements-deploy.txt alone
+# is what actually ships in the Docker image.
+-r requirements-deploy.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0

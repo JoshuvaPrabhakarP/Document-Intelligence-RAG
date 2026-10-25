@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     upload_processing_timeout_s: int = 45
     upload_session_ttl_minutes: int = 30
     upload_embedding_device: str = "cpu"  # see app/upload/indexing.py docstring for why not "cuda"
+    upload_max_files_per_session: int = 10  # caps disk/index growth from one session looping uploads
+
+    # --- Practical request limits (Milestone 5: public deployment) ---
+    # Deliberately simple, in-memory, single-process limits (see
+    # app/ratelimit.py) -- this app runs as one uvicorn worker (see
+    # Dockerfile's comment on why), so there's no shared-state problem a
+    # heavier solution (Redis-backed, etc.) would be solving here.
+    rate_limit_query_per_minute: int = 20       # per client IP
+    rate_limit_upload_per_minute: int = 5       # per client IP (heavier than a query)
+    max_concurrent_heavy_requests: int = 3      # /query + /upload combined, across ALL clients
 
 
 @lru_cache

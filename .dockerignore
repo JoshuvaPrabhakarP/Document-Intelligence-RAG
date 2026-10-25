@@ -1,0 +1,56 @@
+# Keep the build context small AND make sure nothing private/irrelevant
+# is ever sent to the Docker daemon in the first place -- this matters
+# even for files the Dockerfile's COPY instructions never select, since
+# the whole context is still read/uploaded before the build runs.
+
+.git/
+.github/
+venv/
+__pycache__/
+*.pyc
+
+# Research data and the full research requirements file (CUDA torch,
+# langchain/llama-index/ragas/ir_datasets/google-cloud-*, etc.) -- never
+# needed by, and never allowed into, the public deployment image.
+data/
+requirements.txt
+PROJECT_GRAPH_REPORT.md
+ENVIRONMENT_NOTES.md
+
+# Research-only scripts not imported by the live app (see Dockerfile's
+# comment on the specific scripts/ files it DOES copy).
+scripts/build_eval_queries.py
+scripts/chunk_corpus.py
+scripts/compute_objective_metrics.py
+scripts/embed_index.py
+scripts/error_analysis.py
+scripts/eval_metadata_extraction.py
+scripts/logging_schema.py
+scripts/reconstruct_reading_order.py
+scripts/run_eval_matrix.py
+scripts/run_ragas_eval.py
+scripts/run_reranker_ablation.py
+scripts/score_reranker_ablation.py
+
+# Evaluation harness/results and tests -- not part of the running app.
+eval/
+tests/
+PROGRESS.md
+
+# Local secrets / never-committed uploads (same exclusions as .gitignore,
+# repeated here in case the build context is ever run from an unclean
+# checkout rather than a fresh `git clone`).
+.env
+logs/*.jsonl
+*.faiss
+*.index
+embeddings/
+
+# Un-ignore the demo index specifically -- it's small, built only from the
+# public synthetic demo corpus, committed to git (see .gitignore's own
+# comment on this), and the Dockerfile's `COPY demo_data/ demo_data/`
+# needs it present, so the generic *.index/*.faiss excludes above must
+# not swallow it.
+!demo_data/index/
+!demo_data/index/*.index
+!demo_data/index/*.faiss

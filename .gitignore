@@ -20,8 +20,11 @@ embeddings/
 logs/*.jsonl
 
 # demo index — regenerable via demo_data/build_synthetic_demo_corpus.py +
-# embed_index.py; demo_chunks.jsonl itself IS committed (small, synthetic, public)
-demo_data/index/
+# embed_index.py, but COMMITTED anyway (not excluded): it's small (68KB),
+# built only from the public synthetic demo corpus (no privacy concern,
+# unlike the real research index above), and a deployment image/fresh
+# clone needs it present with no extra build step at container start.
+# demo_chunks.jsonl itself IS committed too (small, synthetic, public).
 
 # local env
 .env

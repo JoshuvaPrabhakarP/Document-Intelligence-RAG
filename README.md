@@ -10,9 +10,9 @@ Does structured metadata extracted from business documents actually improve RAG 
 
 | Steps 0–6 | Step 7 | Step 8 |
 |---|---|---|
-| ✅ **Complete** — environment, corpus, retrieval, evaluation, reranker ablation, error analysis | ✅ **Complete** — README and research write-up | ⏳ **Not implemented** — see [Next step](#next-step-deployment) |
+| ✅ **Complete** — environment, corpus, retrieval, evaluation, reranker ablation, error analysis | ✅ **Complete** — README and research write-up | 🔧 **In progress, separately tracked** — see [Next step](#next-step-deployment) and `PROGRESS.md` |
 
-All results below come from Steps 4–6, already run and verified. **Deployment (a usable web app) does not exist yet** — right now this is a set of scripts you run from a terminal, not a hosted service.
+All results below come from Steps 4–6, already run and verified. This research corpus/pipeline is never served publicly — the deployment effort (`PROGRESS.md`) wraps a separate, synthetic demo corpus instead.
 
 ## Quick-start prerequisites
 
@@ -236,4 +236,4 @@ python scripts/error_analysis.py --write    # writes data/eval/error_analysis_re
 
 ## Next step: deployment
 
-**Not implemented yet.** Step 8 will wrap the best-performing pipeline (not every experimental variant) behind FastAPI (the backend engine), a Gradio interface (the actual page a person types into), and a Cloudflare Tunnel (temporary public URL, no hosting cost) — deliberately last, so nothing gets packaged and shared before the real results above were locked in.
+Superseded by what was actually built, tracked in `PROGRESS.md` (the authoritative, currently-updated status for this part of the project): a FastAPI backend with a hand-built web frontend (not Gradio), a synthetic public demo corpus kept separate from this research corpus, an upload/OCR feature, a LangGraph agentic workflow alongside the Standard RAG baseline, and Milestone 5's deployment packaging (Docker image, CI, rate limits, and a recommended public-hosting architecture). A temporary tunnel to a local machine was explicitly ruled out as a completion criterion — the goal is a public HTTPS deployment that works independently of any one computer being on. See `PROGRESS.md` for exact current status, commands, and remaining steps.
