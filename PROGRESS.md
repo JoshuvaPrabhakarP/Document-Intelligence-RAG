@@ -629,3 +629,56 @@ Once you've chosen between Option A and B (or a third option) for LLM hosting, t
 New: `requirements-deploy.txt`, `requirements-dev.txt`, `Dockerfile`, `.dockerignore`, `.github/workflows/tests.yml`, `app/ratelimit.py`, `tests/conftest.py`, `tests/test_ratelimit.py`, `tests/test_session_expiry.py`.
 Modified: `app/config.py` (rate-limit/upload-count settings), `app/main.py` (rate-limit/concurrency wiring), `.env.example` (new settings + deployment-relevant comments), `.gitignore` (demo index un-excluded), `app/static/index.html` (accurate wording + limitations), `README.md` (corrected stale deployment section).
 Committed, not generated fresh: `demo_data/index/*` (small, synthetic, was missing from git).
+
+## Milestone 5 continued — LLM hosting decision (no account created yet)
+
+Decision made: use a hosted small open model for deployment, while keeping the local Ollama configuration as the default and leaving every existing evaluation report (`eval/EVALUATION_REPORT.md`, `eval/POSTFIX_REPORT.md`) labeled with the Ollama/Qwen3 8B model they actually tested — none of those reports were touched.
+
+### Provider/model recommendation, verified against official docs (not aggregators)
+
+**Together.ai, model `Qwen/Qwen3.5-9B`.** Confirmed directly from Together's own documentation (not third-party pricing aggregators, which disagreed with each other too much to trust):
+- **Function/tool calling: supported** (`docs.together.ai/docs/function-calling`) — the exact mechanism `app/agent/tools.py` depends on.
+- **JSON-schema structured output: supported**, and Together's own `response_format`/`json_schema` documentation page uses Qwen3.5-9B as its worked example — the exact mechanism `app/agent/llm.py::assess_evidence()` depends on.
+- Together's serverless models table explicitly lists Qwen3.5-9B with both "Function calling: Yes" and "Structured outputs: Yes" as capability flags.
+- Pricing: **$0.17 / 1M input tokens, $0.25 / 1M output tokens**. Closest available lineage to the tested `qwen3:8b` (same model family, one generation newer, 9B vs. 8B) — not identical, so Agent/Standard RAG behavior may differ slightly; this is exactly what the planned targeted checks (below) are for.
+- Base URL: `https://api.together.ai/v1` (OpenAI-compatible — same shape Ollama's endpoint already uses, confirmed from Together's quickstart docs).
+
+Groq was checked too: confirmed to support tool calling broadly, but does not host any Qwen3 model at a usable size/price for this project (only a 27B preview model at enterprise pricing) and its cheapest small model (`openai/gpt-oss-20b`) is a different model family entirely with structured-output support not confirmed from its docs. Together.ai is the clearer match.
+
+### Cost estimate (assumptions stated, not a guarantee)
+
+| | Estimate | Basis |
+|---|---|---|
+| App hosting (Cloud Run) | **$0/month** | Realistic demo traffic is far inside the free tier (2M requests/month) |
+| API cost per Standard RAG query | ~$0.0003 | ~1,500 input + ~300 output tokens at Together's rates |
+| API cost per Agent query | ~$0.001–0.0013 | ~3 model calls/query (this project's own measured average), ~2,000 input + ~300 output tokens each |
+| **At 200 queries/month** (generous for a portfolio demo) | **~$0.05–0.15/month** | Mixed standard/agent traffic |
+| **At 1,000 queries/month** (high) | **~$0.50–0.60/month** | Same mix, 5x the volume |
+| One-time minimum purchase | **$15** | Together.ai's stated minimum first purchase (confirmed from their billing docs) — not a recurring cost |
+
+**Bottom line: effectively a one-time $15 prepay, near-zero ongoing cost at any realistic demo traffic level.** These are estimates from stated token-count assumptions, not a bill — real usage will vary, and the spend controls below bound the downside regardless.
+
+### Spending controls (confirmed from Together's billing docs)
+
+Together.ai is **fully prepaid** — API access is suspended automatically when the balance reaches zero, which is itself a hard spending cap with no action required. **Auto-recharge is opt-in and OFF by default**; leaving it off means spending can never exceed whatever was prepaid, period. There is no documented per-key spend limit or budget-alert feature beyond this prepaid/auto-recharge mechanism (checked their billing page directly; a "spend controls" page it references returned a 404 when fetched directly, so could not be confirmed further — mentioning this gap rather than guessing).
+
+### A real gap found and fixed while preparing this: the agent workflow was not configurable at all
+
+`app/agent/llm.py` hardcoded `OLLAMA_BASE_URL = "http://localhost:11434/v1"` and `MODEL = "qwen3:8b"` as module-level constants, completely bypassing `app/config.py`'s settings — meaning that no matter how `app/generation/` (the Standard RAG path) was configured, the Agent workflow specifically could never be pointed at a hosted provider. Fixed: both now read `ollama_base_url`/`ollama_model` from settings lazily, the same pattern already used elsewhere. Also added a `generation_api_key` setting (default `"ollama"`, a harmless placeholder Ollama ignores) and threaded it through `OllamaProvider` and `get_provider()` — switching either workflow to a hosted provider is now an environment variable change, not a code change. Verified: full regression suite still passes (one test failed and then passed on an immediate retry — confirmed as the already-documented ~1-in-5 model-sampling variance from `eval/POSTFIX_REPORT.md` §2, not a regression from this change, which only reads settings instead of hardcoded constants with no logic change).
+
+### Exact account setup + secure credential-entry steps
+
+1. Go to `api.together.ai` and create an account.
+2. Add a minimum $15 prepay balance (their stated minimum first purchase). Leave auto-recharge **off** unless you want it on.
+3. Open the API keys page in your account, click "Create key," name it (e.g. "document-intelligence-rag-demo"), and copy the value — it is shown only once.
+4. **Do not paste that key into this chat.** Instead, either:
+   - **For local testing**: add it to your `.env` file (already gitignored, never committed) as `GENERATION_API_KEY=<the key>`, `OLLAMA_BASE_URL=https://api.together.ai/v1`, `OLLAMA_MODEL=Qwen/Qwen3.5-9B` — then tell me "I've added it to .env" and I can run the targeted checks below without ever seeing the key itself (only confirming the app can reach the provider).
+   - **For the real deployment**: add the same three values as Cloud Run's environment variables/secrets (Cloud Run supports mounting a secret from Secret Manager as an env var) when we get to the actual `gcloud run deploy` step — not before.
+
+### What happens next (after you've done the above)
+
+Once the key exists in your `.env` (or you tell me it's set another way I can verify without seeing it), I'll run the **targeted deployment-model checks** you asked for — NOT a full re-evaluation — against Together.ai's Qwen3.5-9B: real structured tool calling, an answer-correctness spot-check, citation validity, a clarification-follow-up round trip, and the insufficient-evidence fallback, for both workflows. Differences from the Ollama/Qwen3-8B behavior documented in the existing evaluation reports will be reported honestly, and those reports will stay labeled with the model they actually tested — nothing retroactively relabeled.
+
+### Still not done, deliberately
+
+No GCP project, no Together.ai account, no API key, no deployment, no charge. This section is preparation and research only, exactly as instructed.

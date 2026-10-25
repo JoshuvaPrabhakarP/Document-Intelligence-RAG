@@ -11,6 +11,7 @@ def get_provider(settings) -> GenerationProvider:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             timeout_s=settings.generation_timeout_s,
+            api_key=settings.generation_api_key,
         )
     raise ValueError(
         f"Unknown generation_provider {settings.generation_provider!r}. "

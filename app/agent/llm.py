@@ -1,25 +1,41 @@
 """
-Thin wrapper around the SAME Ollama endpoint app/generation/ollama_provider.py
-already uses, extended for what the agent needs that plain generation
-doesn't: real tool-calling (`tools=`) and schema-constrained structured
-output (`response_format=`) for the evidence-assessment step. Both
-mechanisms were verified directly against this project's running Ollama
-instance before this file was written — see PROGRESS.md Milestone 3 for
-the verification transcript — not assumed from documentation.
+Thin wrapper around the SAME OpenAI-compatible endpoint app/generation/
+ollama_provider.py already uses, extended for what the agent needs that
+plain generation doesn't: real tool-calling (`tools=`) and schema-
+constrained structured output (`response_format=`) for the evidence-
+assessment step. Both mechanisms were verified directly against this
+project's running Ollama instance before this file was written — see
+PROGRESS.md Milestone 3 for the verification transcript — not assumed
+from documentation.
+
+Milestone 5 fix: base_url/model/api_key used to be hardcoded module
+constants pointing at localhost Ollama specifically, completely bypassing
+app/config.py's settings -- meaning the agent could never be pointed at a
+hosted provider no matter what else was configured for deployment (only
+the Standard RAG path, via app/generation/get_provider(), was ever
+actually configurable). Now reads the same settings
+(ollama_base_url/ollama_model/generation_api_key) lazily, same as the
+rest of the app -- changing providers is an environment variable change,
+not a code change, for both workflows now, not just one.
 
 `think: false` is passed on every call, same as llm_client.py/
 ollama_provider.py, and for the same reason: Qwen3's thinking mode is a
 ~13x latency multiplier (Section 4b / PROGRESS.md Milestone 2), and
 leaving it on here would also risk leaking reasoning text into tool-call
 arguments or the structured route decision — neither of which should ever
-surface as "hidden chain-of-thought" in a user-facing response.
+surface as "hidden chain-of-thought" in a user-facing response. A
+different hosted model may not have this exact issue or flag, but passing
+a field an OpenAI-compatible provider doesn't recognize is harmless
+(ignored, not an error) for any provider tested so far.
+
+NOTE: `think: false` is Qwen3/Ollama-specific. If the chosen hosted model
+doesn't support or need it, this is a no-op for that provider's API (an
+unrecognized extra_body field), not something that needs removing per
+provider.
 """
 
 import json
 import time
-
-OLLAMA_BASE_URL = "http://localhost:11434/v1"
-MODEL = "qwen3:8b"
 
 _client = None
 
@@ -29,8 +45,17 @@ def _get_client():
     if _client is None:
         from openai import OpenAI
 
-        _client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+        from app.config import get_settings
+
+        settings = get_settings()
+        _client = OpenAI(base_url=settings.ollama_base_url, api_key=settings.generation_api_key)
     return _client
+
+
+def _get_model() -> str:
+    from app.config import get_settings
+
+    return get_settings().ollama_model
 
 
 class AgentLLMError(RuntimeError):
@@ -50,7 +75,7 @@ def call_with_tools(messages: list[dict], tools: list[dict], timeout_s: int = 60
     client = _get_client()
     try:
         response = client.chat.completions.create(
-            model=MODEL,
+            model=_get_model(),
             messages=messages,
             tools=tools,
             extra_body={"think": False},
@@ -144,7 +169,7 @@ If route is "answer", phrase the answer as a complete sentence that restates the
 
     try:
         response = client.chat.completions.create(
-            model=MODEL,
+            model=_get_model(),
             messages=[{"role": "user", "content": prompt}],
             extra_body={"think": False},
             response_format={"type": "json_schema", "json_schema": {"name": "evidence_assessment", "schema": EVIDENCE_SCHEMA}},

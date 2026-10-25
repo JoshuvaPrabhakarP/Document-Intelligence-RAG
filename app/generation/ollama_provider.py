@@ -1,15 +1,17 @@
 """
-Ollama-backed GenerationProvider — the only provider wired in for this
-milestone, per the stated scope ("keep Ollama for local development, do
-not introduce a paid provider yet").
+OpenAI-compatible GenerationProvider -- named "Ollama" for history (it was
+the only provider for Milestones 1-4), but works against ANY OpenAI-
+compatible chat-completions endpoint purely through configuration
+(base_url/model/api_key, all from app/config.py) -- no code change needed
+to point this at a hosted provider instead of local Ollama (Milestone 5).
 
 Reuses the ALREADY-TESTED prompt-building and <think>-stripping logic from
 scripts/llm_client.py (Step 4's research code — found and fixed the ~13x
 "thinking mode" latency trap there) rather than reimplementing it. This
 file adds what the research script didn't need: configurable base_url/
-model/timeout (via app/config.py, not hardcoded globals) and proper error
-handling that raises GenerationError instead of letting a raw httpx/openai
-exception reach the API layer.
+model/api_key/timeout (via app/config.py, not hardcoded globals) and
+proper error handling that raises GenerationError instead of letting a
+raw httpx/openai exception reach the API layer.
 """
 
 import sys
@@ -27,12 +29,12 @@ from .base import GenerationError, GenerationProvider
 
 
 class OllamaProvider(GenerationProvider):
-    def __init__(self, base_url: str, model: str, timeout_s: int = 60):
+    def __init__(self, base_url: str, model: str, timeout_s: int = 60, api_key: str = "ollama"):
         from openai import OpenAI
 
         self.model = model
         self.timeout_s = timeout_s
-        self.client = OpenAI(base_url=base_url, api_key="ollama", timeout=timeout_s)
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s)
 
     def generate(self, query: str, context_chunks, candidates=None):
         prompt = build_prompt(query, context_chunks, candidates=candidates)

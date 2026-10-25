@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "qwen3:8b"
     generation_timeout_s: int = 60
+    # Despite the name, this is used for ANY OpenAI-compatible endpoint, not
+    # just Ollama (which ignores the value entirely -- the local default
+    # "ollama" is a harmless placeholder). Pointing ollama_base_url/
+    # ollama_model/generation_api_key at a hosted provider (e.g. Together.ai)
+    # instead of localhost Ollama is then just an environment variable
+    # change, no code change, for BOTH the Standard RAG and Agent workflows
+    # (see app/generation/ollama_provider.py and app/agent/llm.py). Never
+    # commit a real key here -- set it via a real .env (gitignored) or the
+    # deployment platform's own secret/environment configuration.
+    generation_api_key: str = "ollama"
 
     max_question_length: int = 500
 
