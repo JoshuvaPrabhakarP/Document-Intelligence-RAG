@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-10-25T10:57:12-0400",
+  "git_commit": "c80940efca06ac1a70d12b5e9229529c4f343297",
+  "app_config": "demo",
+  "ollama_model": "qwen3:8b",
+  "ollama_version": "0.31.2",
+  "embedding_model": "BAAI/bge-large-en-v1.5",
+  "reranker_model": "BAAI/bge-reranker-large",
+  "use_reranker": true,
+  "retrieval_pool_size": 50,
+  "top_k": 5,
+  "cold_start_warmup_ms": 94375.90133900085
+}

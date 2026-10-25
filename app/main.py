@@ -143,6 +143,7 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
         original_question = pending.original_question
         state = resume_state(
             original_question=pending.original_question,
+            clarification_question=pending.clarification_question,
             clarification_answer=question,
             prior_messages=pending.messages,
             prior_retrieved_passages=pending.retrieved_passages,

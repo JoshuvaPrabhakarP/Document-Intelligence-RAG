@@ -3,15 +3,14 @@ tables used in eval/EVALUATION_REPORT.md. Pure read/aggregate -- never
 re-runs or re-scores anything, so re-running this script never changes a
 result, only how it's summarized."""
 
+import argparse
 import json
 import statistics
 from pathlib import Path
 
-RESULTS = json.loads((Path(__file__).parent / "results" / "raw_results.json").read_text())
 
-
-def held_out(cases):
-    return [c for c in cases if c["split"] == "held_out"]
+def held_out(cases, split="held_out"):
+    return [c for c in cases if c["split"] == split]
 
 
 def pct(n, d):
@@ -19,8 +18,17 @@ def pct(n, d):
 
 
 def main():
-    cases = held_out(RESULTS["cases"])
-    print(f"Held-out cases: {len(cases)}\n")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results", default=str(Path(__file__).parent / "results" / "raw_results.json"),
+                         help="Path to a raw_results.json (default: Milestone 4's original, unchanged)")
+    parser.add_argument("--split", default="held_out",
+                         help="Which cases[].split value to summarize (default: held_out; use 'regression' for a before/after re-run of Milestone 4's old held-out set)")
+    args = parser.parse_args()
+
+    global RESULTS
+    RESULTS = json.loads(Path(args.results).read_text())
+    cases = held_out(RESULTS["cases"], args.split)
+    print(f"{args.split} cases: {len(cases)}\n")
 
     # ---- Route correctness ----
     print("== Route correctness (held-out only) ==")
@@ -38,7 +46,7 @@ def main():
     print()
     # ---- Answer correctness (only where expected_answer_facts non-empty, i.e. answer cases) ----
     print("== Answer correctness (held-out, route=answer cases only) ==")
-    answerable = [c for c in cases if c["category"] in ("answerable", "adversarial")]
+    answerable = [c for c in cases if c["category"] in ("answerable", "adversarial", "legitimate_instruction")]
     std_correct = sum(1 for c in answerable if c["scoring"].get("standard_answer_correct"))
     agent_correct = sum(1 for c in answerable if c["scoring"].get("agent_answer_correct"))
     print(f"Standard: {std_correct}/{len(answerable)} ({pct(std_correct, len(answerable))})")
@@ -53,6 +61,15 @@ def main():
     adversarial = [c for c in cases if c["category"] == "adversarial"]
     for c in adversarial:
         print(f"  [{c['id']}] standard_forbidden_ok={c['scoring'].get('standard_forbidden_ok')} agent_forbidden_ok={c['scoring'].get('agent_forbidden_ok')}")
+
+    print()
+    # ---- Legitimate instruction-like content: did the fix overcorrect? ----
+    legit = [c for c in cases if c["category"] == "legitimate_instruction"]
+    if legit:
+        print("== Legitimate instruction-like content (held-out) -- full answers for qualitative review ==")
+        for c in legit:
+            print(f"  [{c['id']}] standard_correct={c['scoring'].get('standard_answer_correct')} | standard_ans={c['standard']['answer']!r}")
+            print(f"        agent_correct={c['scoring'].get('agent_answer_correct')} | agent_ans={c['agent']['answer']!r}")
 
     print()
     # ---- Citation validity ----

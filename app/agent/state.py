@@ -66,6 +66,7 @@ def new_state(question: str, session_mode: str, session_id: str | None) -> Agent
 
 def resume_state(
     original_question: str,
+    clarification_question: str,
     clarification_answer: str,
     prior_messages: list[dict],
     prior_retrieved_passages: dict,
@@ -85,10 +86,29 @@ def resume_state(
     a deliberate simplicity choice: the session itself is already the
     persistence boundary for this feature, so durable graph checkpointing
     across process restarts isn't needed here.
+
+    BUG FIX (Milestone 4 evaluation found this): state["question"] used to
+    stay the bare ORIGINAL question on resume. assess_evidence_node makes
+    its routing/answering decision from state["question"] + the retrieved
+    passages alone -- it never reads state["messages"] -- so the user's
+    clarification answer never reached it, and a correctly-triggered
+    clarify would just ask the same question again. state["question"] is
+    now a combined string carrying all three pieces (original question,
+    what was asked, what the user answered) so BOTH the routing decision
+    (assess_evidence_node) and the tool-calling loop (agent_node, via
+    `messages` below) have the full exchange.
     """
-    messages = list(prior_messages) + [{"role": "user", "content": f"Clarification: {clarification_answer}"}]
+    messages = list(prior_messages) + [
+        {"role": "assistant", "content": f"I need clarification: {clarification_question}"},
+        {"role": "user", "content": f"Clarification: {clarification_answer}"},
+    ]
+    combined_question = (
+        f"{original_question}\n\n"
+        f"(You previously asked for clarification: \"{clarification_question}\" "
+        f"-- the user's answer is: \"{clarification_answer}\")"
+    )
     return AgentState(
-        question=original_question,
+        question=combined_question,
         session_mode=session_mode,
         session_id=session_id,
         messages=messages,

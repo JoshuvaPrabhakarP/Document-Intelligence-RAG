@@ -25,11 +25,12 @@ import time
 from unittest.mock import patch
 
 import httpx
+import pymupdf
 import pytest
 from fastapi.testclient import TestClient
 
 from app.agent import graph as agent_graph
-from app.agent.state import new_state
+from app.agent.state import new_state, resume_state
 from app.agent.tools import ToolArgumentError, execute_fetch_source, execute_search_documents
 from app.config import get_settings
 from app.main import app
@@ -48,6 +49,13 @@ def _assess_citing_all_passages(route="answer", answer="The total is $42.17.", c
             "cited_passage_ids": pids, "reasoning": "test",
         }
     return _inner
+
+
+def _make_test_pdf(text: str) -> bytes:
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    return doc.tobytes()
 
 
 def _tool_call(call_id: str, name: str, arguments: dict) -> dict:
@@ -96,6 +104,56 @@ def test_clarify_route_surfaces_a_clarification_question():
     assert result["route"] == "clarify"
     assert result["clarification_question"] == "Which receipt do you mean?"
     assert result["answer"] is None
+
+
+def test_resume_state_combines_original_question_clarification_and_answer():
+    """Milestone 4 bug fix: assess_evidence_node decides the route from
+    state["question"] alone (it never reads state["messages"]), so the
+    clarification answer MUST be folded into state["question"] itself on
+    resume, not just appended to the chat history -- that's what this test
+    pins down directly against resume_state's own output."""
+    state = resume_state(
+        original_question="What is the total?",
+        clarification_question="Which receipt do you mean?",
+        clarification_answer="The Example Grocers Inc. receipt",
+        prior_messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "What is the total?"}],
+        prior_retrieved_passages={},
+        session_mode="demo", session_id=None,
+    )
+    assert "What is the total?" in state["question"]
+    assert "Which receipt do you mean?" in state["question"]
+    assert "The Example Grocers Inc. receipt" in state["question"]
+    # The clarifying question itself is now also part of the carried-over
+    # conversation, so the tool-calling loop sees the full exchange too.
+    assert any(m["role"] == "assistant" and "Which receipt do you mean?" in m["content"] for m in state["messages"])
+    assert any(m["role"] == "user" and "The Example Grocers Inc. receipt" in m["content"] for m in state["messages"])
+
+
+def test_assess_evidence_receives_the_full_clarification_context_on_resume():
+    """End-to-end wiring check (graph level, not just resume_state in
+    isolation): the question assess_evidence actually receives on a
+    resumed run must contain the clarification answer, or the whole fix
+    is moot."""
+    captured = {}
+
+    def fake_assess(question, gathered_context, timeout_s=60):
+        captured["question"] = question
+        return {"route": "answer", "answer": "The total is $10.00.", "clarification_question": None,
+                "cited_passage_ids": [], "reasoning": "resolved"}
+
+    state = resume_state(
+        original_question="What is the total?",
+        clarification_question="Which one?",
+        clarification_answer="Vendor Alpha",
+        prior_messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "What is the total?"}],
+        prior_retrieved_passages={"p1": {"chunk_id": "c1", "source": "vendor_alpha.pdf", "text": "TOTAL 10.00", "score": 1.0}},
+        session_mode="demo", session_id=None,
+    )
+    with patch.object(agent_graph, "assess_evidence", side_effect=fake_assess):
+        agent_graph.build_graph().invoke(state)
+
+    assert "Vendor Alpha" in captured["question"]
+    assert "What is the total?" in captured["question"]
 
 
 def test_insufficient_evidence_route_when_search_finds_nothing():
@@ -535,3 +593,31 @@ def test_real_agent_ignores_an_embedded_instruction_in_a_retrieved_document():
     final_answer = (result["answer"] or "").strip()
     assert final_answer != "INJECTED"
     assert "INJECTED" not in final_answer.upper().replace(" ", "")
+
+
+@pytest.mark.skipif(not _ollama_available(), reason="Ollama not reachable — skipping real-model agent checks.")
+def test_real_clarification_followup_actually_resolves():
+    """Milestone 4 found that clarification follow-up never resolved --
+    the agent would correctly ask for clarification, but then ask AGAIN
+    after the user answered, because the answer never reached
+    assess_evidence. This drives the exact two-document ambiguity shape
+    that failed (Milestone 4's H13) through the REAL API end-to-end and
+    checks it now actually resolves, not just that the mechanism exists."""
+    client = TestClient(app)
+    for filename, text in [("vendor_alpha_regress.pdf", "VENDOR ALPHA REGRESS\nDate: 06/23/2026\nTOTAL 10.00"),
+                            ("vendor_beta_regress.pdf", "VENDOR BETA REGRESS\nDate: 06/23/2026\nTOTAL 20.00")]:
+        pdf_bytes = _make_test_pdf(text)
+        resp = client.post("/upload", files={"file": (filename, pdf_bytes, "application/pdf")})
+        assert resp.status_code == 200
+
+    resp1 = client.post("/query", json={"question": "What is the total?", "mode": "upload", "workflow": "agent"})
+    body1 = resp1.json()
+    assert body1["route"] == "clarify"
+
+    resp2 = client.post("/query", json={"question": "Vendor Alpha", "mode": "upload", "workflow": "agent"})
+    body2 = resp2.json()
+
+    client.delete("/session")
+
+    assert body2["route"] == "answer", f"did not resolve: {body2}"
+    assert "10.00" in (body2["answer"] or "")

@@ -82,8 +82,8 @@ def _resolve_question(question: str, followup: str) -> str:
     return f"{question} Specifically, I mean: {followup}."
 
 
-def load_cases() -> list[dict]:
-    data = json.loads((EVAL_DIR / "cases.json").read_text())
+def load_cases(cases_path: Path) -> list[dict]:
+    data = json.loads(cases_path.read_text())
     return data["cases"]
 
 
@@ -300,10 +300,10 @@ def build_config_snapshot(cold_ms: float) -> dict:
     }
 
 
-def run_variability_subset(cases_by_id: dict) -> list[dict]:
-    print(f"Running variability subset {REPEAT_SUBSET_IDS} x{REPEATS}...", file=sys.stderr)
+def run_variability_subset(cases_by_id: dict, repeat_ids: list[str]) -> list[dict]:
+    print(f"Running variability subset {repeat_ids} x{REPEATS}...", file=sys.stderr)
     runs = []
-    for case_id in REPEAT_SUBSET_IDS:
+    for case_id in repeat_ids:
         case = cases_by_id[case_id]
         for rep in range(1, REPEATS + 1):
             print(f"  {case_id} repeat {rep}/{REPEATS}", file=sys.stderr)
@@ -340,15 +340,23 @@ def summarize_variability(runs: list[dict]) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-variability", action="store_true")
+    parser.add_argument("--cases", default=str(EVAL_DIR / "cases.json"),
+                         help="Path to the cases JSON file (default: eval/cases.json, Milestone 4's original set)")
+    parser.add_argument("--results-dir", default=str(RESULTS_DIR),
+                         help="Where to write raw_results.json/config_snapshot.json (default: eval/results, Milestone 4's original location)")
+    parser.add_argument("--repeat-ids", nargs="*", default=REPEAT_SUBSET_IDS,
+                         help="Case IDs to repeat for the variability subset (default: Milestone 4's original four)")
     args = parser.parse_args()
 
-    RESULTS_DIR.mkdir(exist_ok=True)
-    cases = load_cases()
+    cases_path = Path(args.cases)
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(exist_ok=True, parents=True)
+    cases = load_cases(cases_path)
     cases_by_id = {c["id"]: c for c in cases}
 
     cold_ms = warm_up()
     config_snapshot = build_config_snapshot(cold_ms)
-    (RESULTS_DIR / "config_snapshot.json").write_text(json.dumps(config_snapshot, indent=2))
+    (results_dir / "config_snapshot.json").write_text(json.dumps(config_snapshot, indent=2))
     print(f"Config snapshot saved. ollama_version={config_snapshot['ollama_version']}", file=sys.stderr)
 
     results = []
@@ -356,17 +364,36 @@ def main():
         print(f"Running {case['id']} ({case['split']}/{case['category']}/{case['mode']})...", file=sys.stderr)
         results.append(run_case(case))
 
-    variability_runs = [] if args.skip_variability else run_variability_subset(cases_by_id)
+    # Save the primary results NOW, before the optional variability subset --
+    # a crash during variability (e.g. GPU memory exhaustion after many
+    # sequential real-model calls in one long process, observed once during
+    # Milestone 4's post-fix re-run) must not lose work that already
+    # finished successfully. The file is overwritten below if variability
+    # also completes; if it doesn't, this is what's left on disk, which is
+    # still a complete, valid primary-results file.
+    out_path = results_dir / "raw_results.json"
+    out_path.write_text(json.dumps({
+        "config_snapshot": config_snapshot, "cases": results,
+        "variability_runs": [], "variability_summary": {},
+    }, indent=2))
+    print(f"Primary results saved to {out_path} ({len(results)} cases) before attempting variability.", file=sys.stderr)
+
+    variability_runs = []
+    if not args.skip_variability:
+        try:
+            variability_runs = run_variability_subset(cases_by_id, args.repeat_ids)
+        except Exception as exc:  # noqa: BLE001 -- primary results above must survive this either way
+            print(f"Variability subset failed ({exc!r}); primary results already saved are unaffected.", file=sys.stderr)
     variability_summary = summarize_variability(variability_runs) if variability_runs else {}
 
-    (RESULTS_DIR / "raw_results.json").write_text(json.dumps({
+    out_path.write_text(json.dumps({
         "config_snapshot": config_snapshot,
         "cases": results,
         "variability_runs": variability_runs,
         "variability_summary": variability_summary,
     }, indent=2))
 
-    print(f"Done. {len(results)} cases run. Results saved to {RESULTS_DIR / 'raw_results.json'}", file=sys.stderr)
+    print(f"Done. {len(results)} cases run, {len(variability_runs)} variability runs. Results saved to {out_path}", file=sys.stderr)
     # Leftover upload sessions (demo-mode cases set a session cookie too,
     # for agent-workflow clarification state) are per-TestClient in-memory
     # cookie jars that vanish with the process -- but the server-side

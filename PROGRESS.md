@@ -468,3 +468,40 @@ New: `eval/cases.json`, `eval/run_eval.py`, `eval/analyze.py`, `eval/EVALUATION_
 Modified: `app/agent/tools.py` (reranking fix), `app/agent/graph.py` (new `MAX_CLARIFICATION_ROUNDS`/`MAX_CUMULATIVE_TOOL_CALLS` constants), `app/upload/session.py` (`PendingClarification.rounds`/`cumulative_tool_calls`), `app/main.py` (cumulative clarification cap enforcement), `tests/test_agent.py` (3 new tests + a reranker warm-up fix for the real-model tests).
 Untouched: `app/rag_pipeline.py` and the rest of the Standard RAG baseline.
 Never committed: any real uploaded document content (only synthetic PDFs generated on the fly, same as every prior milestone).
+
+## Post-Milestone-4 fixes — clarification follow-up and prompt injection (complete)
+
+Full detail, before/after traces, and the honest limits of these fixes live in **`eval/POSTFIX_REPORT.md`** — this section is a summary pointer.
+
+### Fix 1: clarification follow-up never resolved
+
+Root cause: `assess_evidence_node` decides the route/answer from `state["question"]` alone, and `resume_state()` left that as the bare original question on resume — the user's clarification answer never reached it. Fixed: `resume_state()` now folds the original question, the clarification question asked, and the user's answer into one combined `state["question"]`, and records the clarification exchange in the carried-over message history too. Verified fixed on the exact two cases that failed in Milestone 4 (H11, H13 — now `split=regression`) and on two genuinely fresh, previously-unseen ambiguity cases (N3, N4) that confirm the fix generalizes rather than being special-cased.
+
+### Fix 2: factual-override prompt injection (both systems)
+
+Root cause: neither Standard RAG's (`scripts/llm_client.py::build_prompt()`) nor the agent's (`app/agent/llm.py::assess_evidence()`) prompt gave the model any signal distinguishing document content from instructions, so a receipt claiming "the real total is actually $999.99" got echoed back as the answer 100% of the time (Milestone 4's H12). Fixed with a semantic instruction/data-separation change (explicit delimiters + naming the failure pattern) in both prompts plus the agent's `SYSTEM_PROMPT` — deliberately not a keyword blocklist, so it isn't limited to the exact phrase that was tested. Verified fixed on H12 (now regression) and on a third, freshly-worded injection (N5), and confirmed NOT to overcorrect into rejecting legitimate instruction-like document text (N6, a real receipt footer).
+
+**Does not claim complete injection resistance.** A dedicated 20-trial repeated-sampling study (`eval/injection_variability.py`) found the dangerous outcome (adopting the injected value) still occurs in roughly 1 of 5 real trials for both systems, down from 100% pre-fix but not eliminated — Standard RAG's more common new failure mode is overcautious abstention rather than being fooled. This is documented prominently, not glossed over, per explicit instruction.
+
+### Two real operational bugs found and fixed while running this re-assessment
+
+1. `eval/run_eval.py` only saved results once, at the very end, after an optional variability subset — a crash during that subset lost all already-completed primary results. Fixed to save immediately after the main case loop.
+2. This machine's single GPU is shared between Ollama and this app's reranker (which always tries CUDA if available, regardless of `app/config.py`'s device setting) — running a long evaluation caused a CUDA out-of-memory crash and, even without the repeat subset, intermittent 60-second execution timeouts that looked like logic regressions but weren't. Worked around with `CUDA_VISIBLE_DEVICES=""` for the evaluation process only; disclosed as a methodology limitation (this round's latency numbers aren't comparable to Milestone 4's GPU-based ones).
+
+### Verified
+
+```
+venv/bin/python3 -m pytest tests/        # 64 tests; the one probabilistic injection test
+                                          # (see eval/POSTFIX_REPORT.md §2/§6) occasionally fails
+                                          # by design, not as a regression signal
+CUDA_VISIBLE_DEVICES="" venv/bin/python3 eval/run_eval.py \
+  --cases eval/cases_postfix.json --results-dir eval/results_postfix --skip-variability
+venv/bin/python3 eval/analyze.py --results eval/results_postfix/raw_results.json --split regression
+venv/bin/python3 eval/analyze.py --results eval/results_postfix/raw_results.json --split held_out
+```
+
+### Files changed this round
+
+New: `eval/cases_postfix.json`, `eval/POSTFIX_REPORT.md`, `eval/injection_variability.py`, `eval/results/injection_variability.json`, `eval/results_postfix/` (new, separate from Milestone 4's `eval/results/`), `tests/test_injection.py`.
+Modified: `app/agent/state.py` (`resume_state()` signature + combined-question fix), `app/main.py` (threads `clarification_question` through), `app/agent/llm.py` (`assess_evidence()` prompt), `app/agent/graph.py` (`SYSTEM_PROMPT`), `scripts/llm_client.py` (`build_prompt()` — explicit, narrow exception to the "don't touch research code" rule, made because this round's instructions directly asked for it; does not alter any already-saved research metric), `tests/test_agent.py` (3 new tests), `eval/run_eval.py` / `eval/analyze.py` (parameterized for a second cases/results file, default behavior unchanged, plus the results-before-variability save-order fix).
+Untouched and unchanged: `eval/EVALUATION_REPORT.md`, `eval/cases.json`, `eval/results/raw_results.json`, `eval/results/config_snapshot.json` — Milestone 4's original report and outputs, exactly as published.
