@@ -34,8 +34,8 @@ class OllamaProvider(GenerationProvider):
         self.timeout_s = timeout_s
         self.client = OpenAI(base_url=base_url, api_key="ollama", timeout=timeout_s)
 
-    def generate(self, query: str, context_chunks):
-        prompt = build_prompt(query, context_chunks)
+    def generate(self, query: str, context_chunks, candidates=None):
+        prompt = build_prompt(query, context_chunks, candidates=candidates)
 
         t0 = time.monotonic()
         try:

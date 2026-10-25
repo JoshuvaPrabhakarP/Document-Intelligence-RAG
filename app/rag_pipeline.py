@@ -12,6 +12,14 @@ is reimplemented here — this is purely composition:
 inventing a new, unvalidated numeric confidence threshold — no such
 threshold was established anywhere in the Step 4/5 research, so a fresh
 one here would be a guess dressed up as a metric.
+
+Document-ambiguity detection (a question that could have a genuinely
+different correct answer depending on which retrieved document it refers
+to) follows the exact same principle: app/disambiguation.py only supplies
+the candidate-document LIST from retrieval metadata, never a hardcoded
+question/date pattern, and the final "would these actually differ"
+judgment is still made by the LLM reading their real content — not a
+second invented numeric threshold.
 """
 
 import sys
@@ -23,8 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from fusion import HybridRetriever  # noqa: E402
 from rerank import Reranker  # noqa: E402
 
+from app.disambiguation import cluster_candidate_documents, format_candidates
 from app.excerpt import select_excerpt
 from app.generation import GenerationError, get_provider
+
+CLARIFICATION_PREFIX = "CLARIFICATION_NEEDED:"
 
 
 class RAGPipeline:
@@ -66,15 +77,16 @@ class RAGPipeline:
             "provider_configured": self._provider is not None,
         }
 
-    def answer(self, question: str, top_k: int | None = None, use_reranker: bool | None = None):
+    def answer(self, question: str, top_k: int | None = None, use_reranker: bool | None = None,
+               skip_disambiguation: bool = False):
         """Demo/research mode — retrieves from the configured corpus."""
         t0 = time.monotonic()
         pool = self.retriever.search(question, k=self.settings.retrieval_pool_size, pool_size=100)
         retrieval_ms = (time.monotonic() - t0) * 1000
-        return self.answer_from_pool(question, pool, retrieval_ms, top_k, use_reranker)
+        return self.answer_from_pool(question, pool, retrieval_ms, top_k, use_reranker, skip_disambiguation)
 
     def answer_from_retriever(self, question: str, retriever, top_k: int | None = None,
-                               use_reranker: bool | None = None):
+                               use_reranker: bool | None = None, skip_disambiguation: bool = False):
         """Upload mode — same rerank/generate/format logic as answer(), but
         against a CALLER-SUPPLIED retriever (a session-scoped HybridRetriever
         from app/upload/retriever_cache.py) instead of the configured
@@ -83,10 +95,11 @@ class RAGPipeline:
         t0 = time.monotonic()
         pool = retriever.search(question, k=self.settings.retrieval_pool_size, pool_size=100)
         retrieval_ms = (time.monotonic() - t0) * 1000
-        return self.answer_from_pool(question, pool, retrieval_ms, top_k, use_reranker)
+        return self.answer_from_pool(question, pool, retrieval_ms, top_k, use_reranker, skip_disambiguation)
 
     def answer_from_pool(self, question: str, pool: list, retrieval_ms: float,
-                          top_k: int | None = None, use_reranker: bool | None = None):
+                          top_k: int | None = None, use_reranker: bool | None = None,
+                          skip_disambiguation: bool = False):
         top_k = top_k or self.settings.top_k
         use_rerank = self.settings.use_reranker if use_reranker is None else use_reranker
 
@@ -104,10 +117,18 @@ class RAGPipeline:
                 "retrieval_latency_ms": retrieval_ms,
                 "rerank_latency_ms": rerank_ms,
                 "generation_latency_ms": None,
+                "route": "insufficient_evidence",
+                "clarification_question": None,
             }
 
+        # skip_disambiguation=True on a clarification-resume call: the user
+        # already named a specific document, so don't ask again even if the
+        # resolved question still superficially matches more than one.
+        candidates = [] if skip_disambiguation else cluster_candidate_documents(pool)
+        prompt_candidates = format_candidates(candidates) if len(candidates) >= 2 else None
+
         try:
-            answer, generation_ms = self.provider.generate(question, results)
+            answer, generation_ms = self.provider.generate(question, results, candidates=prompt_candidates)
         except GenerationError as exc:
             return {
                 "answer": None,
@@ -119,6 +140,21 @@ class RAGPipeline:
                 "rerank_latency_ms": rerank_ms,
                 "generation_latency_ms": None,
                 "error": str(exc),
+                "route": "insufficient_evidence",
+                "clarification_question": None,
+            }
+
+        if answer.strip().startswith(CLARIFICATION_PREFIX):
+            clarification_question = answer.strip()[len(CLARIFICATION_PREFIX):].strip()
+            return {
+                "answer": None,
+                "sources": self._format_sources(results, question, answer=None),
+                "has_sufficient_evidence": None,
+                "retrieval_latency_ms": retrieval_ms,
+                "rerank_latency_ms": rerank_ms,
+                "generation_latency_ms": generation_ms,
+                "route": "clarify",
+                "clarification_question": clarification_question,
             }
 
         # Reuses the model's own grounded "I don't know" response (see
@@ -132,6 +168,8 @@ class RAGPipeline:
             "retrieval_latency_ms": retrieval_ms,
             "rerank_latency_ms": rerank_ms,
             "generation_latency_ms": generation_ms,
+            "route": "answer" if has_evidence else "insufficient_evidence",
+            "clarification_question": None,
         }
 
     @staticmethod

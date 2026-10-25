@@ -15,12 +15,26 @@ from typing import Sequence
 
 class GenerationProvider(ABC):
     @abstractmethod
-    def generate(self, query: str, context_chunks: Sequence[dict]) -> tuple[str, float]:
+    def generate(self, query: str, context_chunks: Sequence[dict],
+                  candidates: Sequence[dict] | None = None) -> tuple[str, float]:
         """
         query: the user's question.
         context_chunks: list of dicts with at least a "text" key (as
             returned by the retrieval pipeline), already filtered/reranked
             — this function does not do any retrieval itself.
+        candidates: optional list of distinct candidate DOCUMENTS (not
+            chunks) that retrieval found comparably relevant to each other
+            — see app/disambiguation.py::cluster_candidate_documents() /
+            format_candidates(). None or a single-item list means no real
+            ambiguity signal. When len(candidates) >= 2, the provider
+            should instruct the model that if these documents could give
+            genuinely different answers, it must respond with EXACTLY
+            "CLARIFICATION_NEEDED: <question>" instead of a normal answer
+            (see scripts/llm_client.py::build_prompt() for the exact
+            protocol this implements). The CALLER (app/rag_pipeline.py) is
+            responsible for detecting that prefix in the returned
+            answer_text and treating it as a clarification request, not
+            an answer — this method's return shape does not change.
 
         Returns (answer_text, latency_ms). Must raise GenerationError (not
         a bare exception) on failure, so the API layer can return a clean

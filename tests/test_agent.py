@@ -41,7 +41,7 @@ def _assess_citing_all_passages(route="answer", answer="The total is $42.17.", c
     """Builds a fake assess_evidence() that cites whatever passage_id(s)
     actually appear in the gathered_context it's given, so tests don't need
     to predict tools_node's randomly-generated passage_id in advance."""
-    def _inner(question, gathered_context, timeout_s=60):
+    def _inner(question, gathered_context, candidates=None, timeout_s=60):
         pids = re.findall(r"passage_id=(\w+)", gathered_context)
         return {
             "route": route, "answer": answer if route == "answer" else None,
@@ -136,7 +136,7 @@ def test_assess_evidence_receives_the_full_clarification_context_on_resume():
     is moot."""
     captured = {}
 
-    def fake_assess(question, gathered_context, timeout_s=60):
+    def fake_assess(question, gathered_context, candidates=None, timeout_s=60):
         captured["question"] = question
         return {"route": "answer", "answer": "The total is $10.00.", "clarification_question": None,
                 "cited_passage_ids": [], "reasoning": "resolved"}
@@ -154,6 +154,98 @@ def test_assess_evidence_receives_the_full_clarification_context_on_resume():
 
     assert "Vendor Alpha" in captured["question"]
     assert "What is the total?" in captured["question"]
+
+
+def test_agent_two_documents_sharing_a_date_passes_both_as_candidates():
+    """Document-ambiguity fix, agent side: two distinct documents that
+    happen to share a date (Milestone 4's H10 shape) must be detected as
+    comparable candidates and passed into assess_evidence -- the final
+    decision to actually ask is still the model's, but the signal must
+    reach it."""
+    captured = {}
+
+    def fake_assess(question, gathered_context, candidates=None, timeout_s=60):
+        captured["candidates"] = candidates
+        return {"route": "clarify", "answer": None,
+                "clarification_question": "Example Grocers Inc. or Demo Pizza Kitchen?",
+                "cited_passage_ids": [], "reasoning": "two comparable documents"}
+
+    with patch.object(agent_graph, "call_with_tools") as mock_llm, \
+         patch.object(agent_graph, "execute_search_documents") as mock_search, \
+         patch.object(agent_graph, "assess_evidence", side_effect=fake_assess):
+        mock_llm.side_effect = [
+            _llm_result(tool_calls=[_tool_call("t1", "search_documents", {"query": "purchased 03/14/2026"})]),
+            _llm_result(content="found two candidates"),
+        ]
+        mock_search.return_value = [
+            {"chunk_id": "demo_000", "source": "Example Grocers Inc.", "text": "Date: 03/14/2026", "score": 2.66},
+            {"chunk_id": "demo_003", "source": "Demo Pizza Kitchen", "text": "Date: 03/14/2026", "score": 0.21},
+        ]
+        result = agent_graph.build_graph().invoke(new_state("What was purchased on 03/14/2026?", "demo", None))
+
+    assert result["route"] == "clarify"
+    assert captured["candidates"] is not None
+    assert {c["source"] for c in captured["candidates"]} == {"Example Grocers Inc.", "Demo Pizza Kitchen"}
+
+
+def test_agent_two_documents_sharing_a_vendor_passes_both_as_candidates():
+    """Same mechanism, vendor-collision shape: two genuinely different
+    documents (different chunk_ids/totals) that happen to name the SAME
+    vendor must still be treated as two candidates, not collapsed into
+    one just because the vendor text matches."""
+    captured = {}
+
+    def fake_assess(question, gathered_context, candidates=None, timeout_s=60):
+        captured["candidates"] = candidates
+        return {"route": "clarify", "answer": None, "clarification_question": "Which Example Grocers Inc. receipt?",
+                "cited_passage_ids": [], "reasoning": "two comparable documents, same vendor"}
+
+    with patch.object(agent_graph, "call_with_tools") as mock_llm, \
+         patch.object(agent_graph, "execute_search_documents") as mock_search, \
+         patch.object(agent_graph, "assess_evidence", side_effect=fake_assess):
+        mock_llm.side_effect = [
+            _llm_result(tool_calls=[_tool_call("t1", "search_documents", {"query": "total"})]),
+            _llm_result(content="found two candidates"),
+        ]
+        mock_search.return_value = [
+            {"chunk_id": "fileA_p1", "source": "Example Grocers Inc.", "text": "TOTAL 42.17", "score": 1.5},
+            {"chunk_id": "fileB_p1", "source": "Example Grocers Inc.", "text": "TOTAL 58.00", "score": 1.2},
+        ]
+        result = agent_graph.build_graph().invoke(new_state("What is the total?", "upload", "sess-1"))
+
+    assert result["route"] == "clarify"
+    assert len(captured["candidates"]) == 2
+    assert {c["chunk_id"] for c in captured["candidates"]} == {"fileA_p1", "fileB_p1"}
+
+
+def test_agent_uniquely_identified_receipt_gets_no_candidate_signal():
+    """Regression protection: an ordinary single-document question (one
+    chunk clearly dominates) must not send a spurious ambiguity signal."""
+    captured = {}
+
+    def fake_assess(question, gathered_context, candidates=None, timeout_s=60):
+        captured["candidates"] = candidates
+        pids = re.findall(r"passage_id=(\w+)", gathered_context)
+        return {"route": "answer", "answer": "The total at Fictional Hardware Supply is $156.42.",
+                "clarification_question": None, "cited_passage_ids": pids, "reasoning": "one clear match"}
+
+    with patch.object(agent_graph, "call_with_tools") as mock_llm, \
+         patch.object(agent_graph, "execute_search_documents") as mock_search, \
+         patch.object(agent_graph, "assess_evidence", side_effect=fake_assess):
+        mock_llm.side_effect = [
+            _llm_result(tool_calls=[_tool_call("t1", "search_documents", {"query": "Fictional Hardware Supply total"})]),
+            _llm_result(content="found it"),
+        ]
+        mock_search.return_value = [
+            {"chunk_id": "demo_002", "source": "Fictional Hardware Supply", "text": "TOTAL 156.42", "score": 1.96},
+            {"chunk_id": "demo_008", "source": "x", "text": "irrelevant", "score": -5.22},
+        ]
+        result = agent_graph.build_graph().invoke(
+            new_state("What is the total at Fictional Hardware Supply?", "demo", None)
+        )
+
+    assert result["route"] == "answer"
+    assert captured["candidates"] is None
 
 
 def test_insufficient_evidence_route_when_search_finds_nothing():
@@ -180,7 +272,7 @@ def test_insufficient_evidence_route_when_search_finds_nothing():
 # ---------------------------------------------------------------------------
 
 def test_bogus_cited_passage_ids_are_filtered_out():
-    def fake_assess(question, gathered_context, timeout_s=60):
+    def fake_assess(question, gathered_context, candidates=None, timeout_s=60):
         real_pid = re.findall(r"passage_id=(\w+)", gathered_context)[0]
         return {
             "route": "answer", "answer": "The total is $42.17.", "clarification_question": None,

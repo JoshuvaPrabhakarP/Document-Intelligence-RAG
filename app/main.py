@@ -126,6 +126,12 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
     module docstring for why a per-turn-only budget isn't enough on its own.
     """
     pending = sessions.get_pending_clarification(session_id) if session_id else None
+    if pending and pending.workflow != "agent":
+        # Standard RAG also asks for clarification now (document-ambiguity
+        # fix) and shares this one per-session slot -- a pending
+        # clarification left by the OTHER workflow isn't a resume for
+        # this one; treat it as a fresh question instead.
+        pending = None
     if pending and (pending.rounds >= MAX_CLARIFICATION_ROUNDS
                      or pending.cumulative_tool_calls >= MAX_CUMULATIVE_TOOL_CALLS):
         sessions.clear_pending_clarification(session_id)
@@ -162,6 +168,7 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
             clarification_question=result["clarification_question"] or "",
             messages=result["messages"],
             retrieved_passages=result["retrieved_passages"],
+            workflow="agent",
             rounds=(pending.rounds if pending else 0) + 1,
             cumulative_tool_calls=(pending.cumulative_tool_calls if pending else 0) + result["tool_call_count"],
         ))
@@ -202,6 +209,81 @@ def _run_agent_query(question: str, mode: str, session_id: str | None) -> dict:
     }
 
 
+# Fixed, documented template combining the original ambiguous question
+# with the user's clarification answer -- applied uniformly, never tuned
+# per question, matching the same discipline eval/run_eval.py's own
+# _resolve_question() used for scoring Standard RAG's equivalent-
+# information case in Milestone 4.
+def _resolve_question(original_question: str, clarification_answer: str) -> str:
+    return f"{original_question} Specifically, I mean: {clarification_answer}."
+
+
+def _run_standard_query(question: str, mode: str, session_id: str | None,
+                         top_k: int | None, use_reranker: bool | None) -> dict:
+    """Standard RAG's clarification path (document-ambiguity fix): a
+    single extra generation call when app/disambiguation.py's metadata
+    signal plus the model's own judgment decide a question could have a
+    genuinely different answer depending on which of several comparably-
+    relevant documents it means (see app/rag_pipeline.py). Resuming is
+    much simpler than the agent's: there's no tool-calling conversation to
+    carry over, just the original question + the user's answer, combined
+    into one resolved question via _resolve_question() and re-run with
+    disambiguation suppressed (the user already named a specific
+    document) -- not a second LLM call, not a chat history.
+
+    Shares the SAME per-session PendingClarification slot and
+    MAX_CLARIFICATION_ROUNDS cap as the agent workflow (see
+    PendingClarification.workflow for why a pending clarification from
+    the OTHER workflow is never treated as a resume here)."""
+    pending = sessions.get_pending_clarification(session_id) if session_id else None
+    if pending and pending.workflow != "standard":
+        pending = None
+    if pending and pending.rounds >= MAX_CLARIFICATION_ROUNDS:
+        sessions.clear_pending_clarification(session_id)
+        return {
+            "answer": "I wasn't able to resolve this after several rounds of clarification. "
+                      "Please ask a single, more specific question.",
+            "sources": [], "has_sufficient_evidence": False,
+            "retrieval_latency_ms": 0.0, "rerank_latency_ms": None, "generation_latency_ms": 0.0,
+            "error": f"Clarification limit reached ({pending.rounds} rounds).",
+            "route": "insufficient_evidence", "clarification_question": None,
+        }
+
+    if pending:
+        resolved_question = _resolve_question(pending.original_question, question)
+        original_question = pending.original_question
+        skip_disambiguation = True
+        rounds_so_far = pending.rounds
+    else:
+        resolved_question = question
+        original_question = question
+        skip_disambiguation = False
+        rounds_so_far = 0
+
+    if mode == "upload":
+        retriever = retriever_cache.get_retriever(
+            session_id, str(sessions.index_dir(session_id)), str(sessions.chunks_path(session_id))
+        )
+        result = pipeline.answer_from_retriever(resolved_question, retriever, top_k=top_k,
+                                                  use_reranker=use_reranker, skip_disambiguation=skip_disambiguation)
+    else:
+        result = pipeline.answer(resolved_question, top_k=top_k, use_reranker=use_reranker,
+                                   skip_disambiguation=skip_disambiguation)
+
+    if result.get("route") == "clarify" and session_id:
+        sessions.set_pending_clarification(session_id, PendingClarification(
+            original_question=original_question,
+            clarification_question=result["clarification_question"] or "",
+            messages=[], retrieved_passages={},
+            workflow="standard",
+            rounds=rounds_so_far + 1,
+        ))
+    elif session_id:
+        sessions.clear_pending_clarification(session_id)
+
+    return result
+
+
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest, http_request: Request, response: Response):
     start = time.monotonic()
@@ -219,26 +301,17 @@ def query(request: QueryRequest, http_request: Request, response: Response):
                            "or switch to demo mode.",
                 )
         elif request.mode == "demo":
-            if request.workflow == "agent":
-                # Clarification state needs a per-browser identity even in
-                # demo mode, so the agent path always has a session_id —
-                # standard demo-mode queries still never set one.
-                session_id = _get_session_id(http_request, response)
+            # Clarification state (both workflows now) needs a per-browser
+            # identity even in demo mode.
+            session_id = _get_session_id(http_request, response)
         else:
             raise HTTPException(status_code=422, detail=f"Unknown mode {request.mode!r}. Use 'demo' or 'upload'.")
 
         if request.workflow == "agent":
             result = _run_agent_query(request.question, request.mode, session_id)
-        elif request.mode == "upload":
-            retriever = retriever_cache.get_retriever(
-                session_id, str(sessions.index_dir(session_id)), str(sessions.chunks_path(session_id))
-            )
-            result = pipeline.answer_from_retriever(
-                request.question, retriever, top_k=request.top_k, use_reranker=request.use_reranker
-            )
         else:
-            result = pipeline.answer(
-                request.question, top_k=request.top_k, use_reranker=request.use_reranker
+            result = _run_standard_query(
+                request.question, request.mode, session_id, request.top_k, request.use_reranker
             )
     except HTTPException:
         raise

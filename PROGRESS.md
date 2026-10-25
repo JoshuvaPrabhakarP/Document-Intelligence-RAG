@@ -519,3 +519,48 @@ venv/bin/python3 eval/analyze.py --results eval/results_postfix/raw_results.json
 New: `eval/cases_postfix.json`, `eval/POSTFIX_REPORT.md`, `eval/injection_variability.py`, `eval/results/injection_variability.json`, `eval/results_postfix/` (new, separate from Milestone 4's `eval/results/`), `tests/test_injection.py`.
 Modified: `app/agent/state.py` (`resume_state()` signature + combined-question fix), `app/main.py` (threads `clarification_question` through), `app/agent/llm.py` (`assess_evidence()` prompt), `app/agent/graph.py` (`SYSTEM_PROMPT`), `scripts/llm_client.py` (`build_prompt()` — explicit, narrow exception to the "don't touch research code" rule, made because this round's instructions directly asked for it; does not alter any already-saved research metric), `tests/test_agent.py` (3 new tests), `eval/run_eval.py` / `eval/analyze.py` (parameterized for a second cases/results file, default behavior unchanged, plus the results-before-variability save-order fix).
 Untouched and unchanged: `eval/EVALUATION_REPORT.md`, `eval/cases.json`, `eval/results/raw_results.json`, `eval/results/config_snapshot.json` — Milestone 4's original report and outputs, exactly as published.
+
+## Document-ambiguity fix (H10) + injection-scoring correction (complete)
+
+### The H10 fix: document-ambiguity detection, both systems
+
+New shared module `app/disambiguation.py::cluster_candidate_documents()` groups retrieval results by DOCUMENT identity (stripping upload-mode page suffixes so a multi-page file counts once) and returns the distinct documents whose best score is within a calibrated margin of the top result's — a metadata signal, never a hardcoded date or question pattern. Calibrated against real reranker scores on this corpus: genuinely ambiguous cases (H10's date collision, "what is the tax?") show top-two gaps of ~0.2–2.5; clearly-unambiguous cases (the question names the vendor) show gaps of ~7–8. Margin = 3.0 sits between those clusters.
+
+Critically, this signal does NOT unilaterally trigger a clarify — an off-topic question's top chunks can cluster just as tightly (verified: "What is the capital of France?" has a top-two gap of only 0.4, same ballpark as a genuine ambiguity). The final call is still made by the LLM, which is told explicitly to only ask when the candidates are actually relevant and could disagree, otherwise falling back to its normal answer/insufficient_evidence behavior.
+
+**Standard RAG now asks for clarification too** (it never could before) — `scripts/llm_client.py::build_prompt()` lists the candidates and asks the model to reply with a fixed `CLARIFICATION_NEEDED: <question>` format when appropriate; `app/rag_pipeline.py::answer_from_pool()` parses that prefix into `route="clarify"` (reusing the SAME `QueryResponse.route`/`clarification_question` fields the agent already had, so the existing frontend code renders it with zero UI changes). Resolving the follow-up reuses the same per-session `PendingClarification` store the agent uses, now with a `workflow` field so a pending clarification from one workflow is never mistaken for a resume of the other.
+
+**Verified with the real model** (targeted checks, not a full evaluation): Standard RAG now correctly asks for clarification on H10's exact original question, naming the actual candidates by name in most trials (one rare instance named "Context 1/2" instead — a minor, unresolved wording inconsistency, not a correctness bug). The Agent, on a rephrased singular-answer version of the same ambiguity ("What is the total for the purchase on 03/14/2026?"), correctly triggers clarify and even previews each candidate's value. On H10's exact original open-ended wording ("What was purchased..."), the Agent still answers directly rather than literally asking — but now transparently lists BOTH candidates' information instead of silently committing to one, a real improvement even though it isn't a literal route change for that specific question shape. Ordinary single-document questions (e.g. "What is the total amount on the Example Grocers Inc. receipt?") were re-verified correct for both systems with the real model, confirming no regression.
+
+### A real test-isolation bug found and fixed
+
+`tests/test_disambiguation.py`'s mocking helper originally assigned `pipeline._reranker`/`pipeline._provider` directly onto the shared, module-level `pipeline` singleton with no teardown — since `pipeline` is the SAME object `tests/test_integration.py`'s real-model tests use later in the same pytest session, this silently replaced the real reranker/provider with mocks for the rest of the run. Symptom: `tests/test_integration.py`'s two real-model tests failed when the full suite ran, but passed every time they were run in isolation — initially mistaken for a possible disambiguation-logic regression (the off-topic false-positive risk noted above made that a plausible-sounding explanation) until confirmed otherwise by running the full suite with and without the leak fix. Fixed by converting the helper into a proper context manager that restores the original attributes in a `finally` block.
+
+### Injection-test scoring corrected
+
+New shared `eval/scoring.py::classify_injection_outcome()`, used by both `eval/injection_variability.py` and `tests/test_injection.py`, replaces the old bare substring check. It distinguishes ADOPTING the injected value from merely NAMING it while explicitly rejecting it (checks for nearby rejection language around every occurrence) — the exact gap that caused a real, correct answer to be misclassified as "fooled" during the previous round's reconciliation. Still a heuristic, documented as such (not language understanding). `eval/results/injection_variability.json` was re-scored with the new classifier against the SAME preserved answer text — no model calls re-run, no record erased: every trial keeps both the old substring-based label and the corrected one. The only relabeling was a naming cleanup ("abstained" → "abstained_or_unclear"); the headline counts (Standard RAG 2/10 fooled, Agent 1/10 fooled) are unchanged, confirming the manual review done during the previous reconciliation was already correct.
+
+### Deterministic tests (kept separate from real-model evaluation, per standing instruction)
+
+10 new tests in `tests/test_disambiguation.py` (pure `app.disambiguation` unit tests + mocked Standard RAG integration) and 3 new tests in `tests/test_agent.py`, covering exactly the four required scenarios for both systems: two receipts sharing a date, two receipts sharing a vendor, a uniquely identified receipt (regression protection), and a clarification follow-up selecting one candidate. All mocked, all deterministic, all passing. `tests/test_injection.py`'s real-model tests are unchanged in character (still single-sample spot-checks, still documented as able to fail from genuine model variance) — only their scoring logic was corrected.
+
+### Verified
+
+```
+venv/bin/python3 -m pytest tests/        # 76 passed, 1 probabilistic (test_injection.py, expected
+                                          # per eval/POSTFIX_REPORT.md Section 2's measured rate)
+venv/bin/python3 -m pytest tests/test_disambiguation.py tests/test_agent.py -v   # all deterministic
+```
+Targeted real-model checks (not eval/run_eval.py's full harness — that was deliberately not re-run, per instruction, since these fixes don't change what it would measure beyond what's already spot-checked above): H10's exact question (both systems), a singular-answer ambiguity variant (agent), and a uniquely-identified regression case (both systems) — all shown above.
+
+### Files changed this round
+
+New: `app/disambiguation.py`, `eval/scoring.py`, `eval/__init__.py`, `tests/test_disambiguation.py`.
+Modified: `app/rag_pipeline.py` (disambiguation detection + `CLARIFICATION_NEEDED` parsing + `skip_disambiguation` param), `app/generation/base.py` / `app/generation/ollama_provider.py` (`candidates` param, backward compatible), `scripts/llm_client.py` (`build_prompt()` disambiguation block), `app/agent/llm.py` (`assess_evidence()` candidates param), `app/agent/graph.py` (computes candidates for `assess_evidence_node`), `app/upload/session.py` (`PendingClarification.workflow`), `app/main.py` (`_run_standard_query()`, cross-workflow isolation, demo-mode session_id for standard workflow too), `eval/injection_variability.py` (uses the shared classifier), `eval/results/injection_variability.json` (re-scored, not re-run), `tests/test_injection.py` (corrected scoring, same character otherwise).
+Untouched: `eval/EVALUATION_REPORT.md`, `eval/cases.json`, `eval/cases_postfix.json`, `eval/results/raw_results.json`, `eval/results_postfix/raw_results.json`, `eval/POSTFIX_REPORT.md` — no evaluation output from either prior round was re-run or edited.
+
+### Known limitations
+
+1. The clarifying question occasionally names "Context 1/2" instead of the actual vendor/filename (observed once in several real trials) — a minor wording inconsistency in `build_prompt()`'s disambiguation instruction, not fixed this round.
+2. The agent does not literally trigger `clarify` for H10's exact open-ended wording ("What was purchased..." — a listable question, unlike "What is the total?"'s singular-answer shape) — it answers directly but now transparently names all candidates rather than silently picking one. Whether an open-ended, listable question SHOULD trigger clarify at all is a legitimate design question this round didn't resolve either way.
+3. Margin=3.0 is calibrated against this specific corpus and reranker; it is a documented, reasoned choice, not a formally validated threshold, and may need revisiting for a different corpus or reranker model.

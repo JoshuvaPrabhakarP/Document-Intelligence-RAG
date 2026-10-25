@@ -46,11 +46,19 @@ class PendingClarification:
     these across turns, a user (or a model that keeps asking for
     clarification) could repeat that indefinitely for unbounded total tool
     calls / wall-clock time. app/main.py checks these against
-    MAX_CLARIFICATION_ROUNDS / MAX_CUMULATIVE_TOOL_CALLS before resuming."""
+    MAX_CLARIFICATION_ROUNDS / MAX_CUMULATIVE_TOOL_CALLS before resuming.
+
+    workflow: Standard RAG also asks for clarification now (document-
+    ambiguity fix). Both workflows share this one per-session slot, so a
+    pending clarification records WHICH workflow it belongs to -- a
+    follow-up sent under the other workflow is treated as a fresh
+    question, not a mismatched resume, since the two workflows' pending
+    state (messages/retrieved_passages vs. nothing) isn't interchangeable."""
     original_question: str
     clarification_question: str
-    messages: list[dict]  # the agent's message history at the point it paused
-    retrieved_passages: dict  # passages already gathered, so a resume doesn't re-search from scratch
+    messages: list[dict]  # agent workflow only; [] for standard
+    retrieved_passages: dict  # agent workflow only; {} for standard
+    workflow: str = "agent"
     rounds: int = 1
     cumulative_tool_calls: int = 0
 

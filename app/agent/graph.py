@@ -29,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agent.llm import AgentLLMError, assess_evidence, call_with_tools
 from app.agent.state import AgentState
 from app.agent.tools import TOOL_SCHEMAS, ToolArgumentError, execute_fetch_source, execute_search_documents, new_passage_id
+from app.disambiguation import cluster_candidate_documents, format_candidates
 
 MAX_TOOL_CALLS = 4
 MAX_STEPS = 10
@@ -204,14 +205,22 @@ def assess_evidence_node(state: AgentState) -> AgentState:
         # Telling the two apart is exactly assess_evidence's job, so this
         # still needs the model call rather than assuming insufficient_evidence.
         gathered_context = "(No passages were retrieved — the model did not call search_documents, or it returned no matches.)"
+        candidates = []
     else:
         gathered_context = "\n\n".join(
             f"[passage_id={pid}] ({p['source']})\n{p['text']}" for pid, p in state["retrieved_passages"].items()
         )
+        # Metadata-based ambiguity signal (not a hardcoded question/date
+        # pattern) -- see app/disambiguation.py. Candidate pool here is
+        # whatever this run has actually retrieved so far, scored by
+        # whatever score field each passage carries (rerank_score if the
+        # tool reranked, else the raw retriever score).
+        candidates = cluster_candidate_documents(list(state["retrieved_passages"].values()))
 
     t0 = time.monotonic()
     try:
-        result = assess_evidence(state["question"], gathered_context, timeout_s=TIMEOUT_S)
+        prompt_candidates = format_candidates(candidates) if len(candidates) >= 2 else None
+        result = assess_evidence(state["question"], gathered_context, candidates=prompt_candidates, timeout_s=TIMEOUT_S)
     except AgentLLMError as exc:
         # Never silently report success: a failed assessment becomes an
         # honest insufficient-evidence result with the real reason attached,
