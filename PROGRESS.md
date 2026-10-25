@@ -682,3 +682,41 @@ Once the key exists in your `.env` (or you tell me it's set another way I can ve
 ### Still not done, deliberately
 
 No GCP project, no Together.ai account, no API key, no deployment, no charge. This section is preparation and research only, exactly as instructed.
+
+## Milestone 5 continued — hosted-model compatibility test: prepared, not run (credentials missing)
+
+Checked `.env` directly (never printing any secret value — only non-secret fields like `OLLAMA_BASE_URL` were shown): `GENERATION_API_KEY` doesn't exist in it at all, and `OLLAMA_BASE_URL`/`OLLAMA_MODEL` still point at local Ollama (`http://localhost:11434/v1`, `qwen3:8b`). **Together credentials are not configured.** No API call was made.
+
+### A real cross-provider compatibility issue found and fixed (verified against official docs, not just assumed)
+
+Together's own docs show Qwen3.5-9B's thinking-mode toggle is a *different* parameter than Ollama's: `reasoning: {"enabled": False}`, not `extra_body={"think": False}`. Fixed all four call sites (`scripts/llm_client.py`, `app/generation/ollama_provider.py`, `app/agent/llm.py` ×2) to send both flags together in one `extra_body` dict — relies on each provider ignoring a field it doesn't recognize rather than erroring on it. **Verified against the real Ollama instance that this doesn't break anything** (a direct test call with both flags present returned the identical response shape as before); **not yet verified against Together specifically**, since no credentials exist to test with — noted as an assumption to confirm on the first real call, not claimed as proven.
+
+Also re-verified from official docs, specifically to answer "JSON mode alone is not proof of schema enforcement": Together's `response_format` documentation shows the exact `{"type": "json_schema", "json_schema": {...}}` shape `app/agent/llm.py::assess_evidence()` already sends (not merely `{"type": "json_object"}`), and Qwen3.5-9B is the model used in Together's own worked example for it. Their wording describes schema-*guided* generation ("can return JSON that conforms to... schema"), not an explicit constrained-decoding/grammar guarantee — this is stronger than plain JSON mode, but the docs don't claim hard enforcement, and the only way to know whether a given response actually validates against the schema is to check real responses, which is exactly what the prepared test (below) does by attempting to parse each real response as the expected schema and reporting failure honestly if it doesn't.
+
+### Test script prepared and its safety guard verified (zero API calls made)
+
+`eval/together_compat_test.py` — a dedicated, one-off script (not part of the pytest suite, not `eval/run_eval.py`'s harness) with exactly 10 question-flows against the demo corpus only, covering both workflows and every required scenario: correct total + citation, missing-info fallback, ambiguous→clarify, clarify→followup-correct, genuine tool calls, schema-accepted structured evidence assessment, plus a thinking-enabled-vs-disabled comparison reusing one of the required questions. A real per-call usage tracker wraps the OpenAI SDK's `Completions.create` globally for the run (no production code changes needed for this), recording latency, prompt/completion/reasoning tokens (labeled `"unavailable"` rather than invented if a field isn't present in a response), and a running cost estimate against Together's published rates — checked **before** every call, hard-capped at **$0.25 total**, `max_tokens=400` per call bounding worst-case cost.
+
+**Ran the script against the current (Ollama) configuration specifically to verify its safety guard** — it correctly refused to run (exit code 1, zero API calls made) because `OLLAMA_BASE_URL` still points at localhost. This confirms the "stop before API calls" requirement actually works, not just that it's written.
+
+### Monthly cost estimate (upper-bound, assumption-based — not yet measured)
+
+Using the test script's own `max_tokens=400` cap as a conservative ceiling (not an observed average):
+
+| | Per-call estimate (worst case) | Basis |
+|---|---|---|
+| Standard RAG query (1 call) | ~$0.00044 | ≤2,000 input + ≤400 output tokens |
+| Agent query (~3 calls) | ~$0.0013 | ≤2,000 input + ≤400 output tokens × 3 calls |
+| **200 queries/month** (60/40 standard/agent mix) | **~$0.16/month** | |
+| **1,000 queries/month** (same mix) | **~$0.79/month** | |
+
+**Important caveat, stated honestly rather than glossed over**: this project's own earlier testing found that Ollama's `completion_tokens` count can include non-visible (hidden reasoning) content even with thinking disabled — real output token counts can run higher than what the visible answer text would suggest. Whether Together's Qwen3.5-9B does the same is unknown until the test actually runs. These numbers are an upper bound from stated assumptions, explicitly not a measurement — the test script will report real, measured token counts and cost the moment it can run, replacing this estimate rather than supplementing it.
+
+### Exact next step for you (unchanged from the prior entry, repeated for clarity)
+
+1. Create an account at `api.together.ai`, add the $15 minimum prepay balance, leave auto-recharge off.
+2. Generate an API key.
+3. Add to your local `.env` (never paste the key in chat): `GENERATION_API_KEY=<the key>`, `OLLAMA_BASE_URL=https://api.together.ai/v1`, `OLLAMA_MODEL=Qwen/Qwen3.5-9B`.
+4. Tell me it's set — I'll verify the script's guard now passes (without ever seeing the key) and run the 10-question test, reporting real measured results in place of this estimate.
+
+Still true: no account, key, deployment, or charge exists. Full regression suite re-verified after the compatibility fix: **87/87 passing**.

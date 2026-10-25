@@ -78,7 +78,10 @@ def call_with_tools(messages: list[dict], tools: list[dict], timeout_s: int = 60
             model=_get_model(),
             messages=messages,
             tools=tools,
-            extra_body={"think": False},
+            # Disables thinking mode for both Ollama/Qwen3 and Together.ai's
+            # Qwen3.5-9B -- see scripts/llm_client.py's generate_answer()
+            # for the full cross-provider explanation.
+            extra_body={"think": False, "reasoning": {"enabled": False}},
             timeout=timeout_s,
         )
     except Exception as exc:  # noqa: BLE001 — any provider failure becomes one well-known error type
@@ -171,7 +174,9 @@ If route is "answer", phrase the answer as a complete sentence that restates the
         response = client.chat.completions.create(
             model=_get_model(),
             messages=[{"role": "user", "content": prompt}],
-            extra_body={"think": False},
+            # See the comment on the other call_with_tools() request above
+            # in this file for why both flags are sent together.
+            extra_body={"think": False, "reasoning": {"enabled": False}},
             response_format={"type": "json_schema", "json_schema": {"name": "evidence_assessment", "schema": EVIDENCE_SCHEMA}},
             timeout=timeout_s,
         )

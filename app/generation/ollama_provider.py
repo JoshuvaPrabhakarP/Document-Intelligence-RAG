@@ -44,7 +44,11 @@ class OllamaProvider(GenerationProvider):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                extra_body={"think": False},  # ~13x latency fix, see scripts/llm_client.py
+                # Disables thinking mode for both Ollama/Qwen3 ("think") and
+                # Together.ai's Qwen3.5-9B ("reasoning") -- see
+                # scripts/llm_client.py's generate_answer() for the full
+                # explanation of this cross-provider compatibility fix.
+                extra_body={"think": False, "reasoning": {"enabled": False}},
             )
         except Exception as exc:  # noqa: BLE001 — deliberately broad: any provider
             # failure (connection refused, timeout, malformed response) should

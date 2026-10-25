@@ -120,7 +120,18 @@ def generate_answer(query, context_chunks, model=MODEL, candidates=None):
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        extra_body={"think": False},
+        # "think" disables Ollama/Qwen3's native thinking mode; "reasoning"
+        # does the same for Together.ai's Qwen3.5-9B (confirmed from
+        # Together's own docs: a top-level `reasoning: {"enabled": False}`,
+        # not `extra_body={"think": ...}` -- a real cross-provider
+        # compatibility difference, found while preparing Milestone 5's
+        # hosted-model test). Sending both together, as one extra_body dict,
+        # relies on each OpenAI-compatible provider ignoring a field it
+        # doesn't recognize rather than erroring on it -- standard behavior
+        # for this kind of API, but not yet empirically confirmed for
+        # Together specifically (no credentials were available to test
+        # against it at the time this was written).
+        extra_body={"think": False, "reasoning": {"enabled": False}},
     )
     latency_ms = (time.monotonic() - start) * 1000
 
