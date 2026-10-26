@@ -90,6 +90,42 @@ def test_format_candidates_includes_page_for_upload_chunks():
     assert labels[0]["label"] == "receipt.pdf (page 2)"
 
 
+def test_format_candidates_falls_back_to_text_when_source_is_identical():
+    """Regression test for a real bug found during Milestone 5's hosted-
+    model test: the demo/research corpus sets 'source' to a fixed dataset
+    identifier ("synthetic_demo") for EVERY document, not a per-document
+    name -- the old code used 'source' unconditionally, so a genuinely
+    ambiguous question produced a disambiguation prompt listing 4
+    IDENTICAL "synthetic_demo" choices, a signal that looks broken rather
+    than helpful. This is exactly why the hosted model failed to ask for
+    clarification on "What is the total?" even though the ambiguity
+    signal itself (cluster_candidate_documents) correctly fired -- the
+    label it was given was useless. Must fall back to a per-document label
+    derived from the chunk's own text (reliably the vendor name on a
+    receipt) whenever 'source' doesn't distinguish the candidates."""
+    candidates = [
+        {"chunk_id": "demo_008", "source": "synthetic_demo", "text": "DEMO PIZZA KITCHEN\nTOTAL 12.00"},
+        {"chunk_id": "demo_003", "source": "synthetic_demo", "text": "MOCK BOOKSTORE\nTOTAL 37.45"},
+    ]
+    labels = [c["label"] for c in format_candidates(candidates)]
+    assert labels == ["DEMO PIZZA KITCHEN", "MOCK BOOKSTORE"]
+    assert len(set(labels)) == len(labels)  # never identical choices
+
+
+def test_format_candidates_still_prefers_source_when_it_distinguishes():
+    """Upload mode's 'source' is already the original filename -- a good,
+    distinguishing label -- so the text-fallback must NOT override it
+    (that would lose the explicit "filename, and page" requirement for
+    multi-page uploads, where the first line of page 2's text is not
+    the vendor name)."""
+    candidates = [
+        {"chunk_id": "fileA", "source": "receipt_a.pdf", "text": "irrelevant first line A"},
+        {"chunk_id": "fileB", "source": "receipt_b.pdf", "text": "irrelevant first line B"},
+    ]
+    labels = [c["label"] for c in format_candidates(candidates)]
+    assert labels == ["receipt_a.pdf", "receipt_b.pdf"]
+
+
 # ---------------------------------------------------------------------------
 # Standard RAG: real wiring (app/rag_pipeline.py), mocked reranker/provider.
 # ---------------------------------------------------------------------------
@@ -243,3 +279,93 @@ def test_standard_and_agent_pending_clarifications_do_not_cross_resume():
     # was attempted (a resume would have gone through resume_state()/the
     # mocked assess_evidence differently and raised if misused).
     assert resp.json()["route"] == "insufficient_evidence"
+
+
+# ---------------------------------------------------------------------------
+# Routing-rule fixes (Milestone 5 hosted-model test): two real failures
+# found against Together.ai's Qwen3.5-9B --
+#   (a) a genuinely ambiguous question ("What is the total?", 4 receipts)
+#       was answered "I don't know" instead of triggering clarify -- traced
+#       to format_candidates() labeling every demo-corpus candidate
+#       identically ("synthetic_demo"), a signal that looks broken rather
+#       than useful (see the format_candidates tests above).
+#   (b) a question that already names a specific vendor ("...Sample Coffee
+#       Co. receipt?") but asks about an attribute absent from it got
+#       routed to "clarify" instead of "insufficient_evidence" -- the
+#       model was asking WHICH document despite the question already
+#       saying which one, because other retrieved documents happened to
+#       score comparably (the exact "off-topic questions cluster closely
+#       too" trap app/disambiguation.py's own docstring warns about).
+# Both prompts (scripts/llm_client.py::build_prompt(),
+# app/agent/llm.py::assess_evidence()) now say explicitly: a question
+# that already names a document overrides a retrieval-coincidence-based
+# candidate signal -- these tests check that guidance is actually present
+# in the real prompt sent to the model, deterministically (no network).
+# ---------------------------------------------------------------------------
+
+import sys  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "scripts"))
+from llm_client import build_prompt  # noqa: E402
+
+from app.agent.llm import assess_evidence  # noqa: E402
+
+
+def test_standard_prompt_distinguishes_identically_sourced_candidates():
+    """The exact scenario that caused failure (a): demo-corpus candidates
+    whose 'source' is identical. The disambiguation block in the real
+    prompt sent to the model must show distinguishable labels, not the
+    same string repeated, and must carry the "already names a document"
+    guard."""
+    candidates_raw = [
+        {"chunk_id": "demo_008", "source": "synthetic_demo", "text": "DEMO PIZZA KITCHEN\nTOTAL 12.00"},
+        {"chunk_id": "demo_003", "source": "synthetic_demo", "text": "MOCK BOOKSTORE\nTOTAL 37.45"},
+    ]
+    prompt_candidates = format_candidates(candidates_raw)
+    prompt = build_prompt("What is the total?", context_chunks=candidates_raw, candidates=prompt_candidates)
+
+    assert "DEMO PIZZA KITCHEN" in prompt
+    assert "MOCK BOOKSTORE" in prompt
+    assert prompt.count("synthetic_demo") == 0  # the useless identical label must not leak into the prompt
+    assert "already names a specific vendor or document" in prompt
+
+
+def test_agent_prompt_tells_model_named_vendor_overrides_candidate_noise():
+    """The exact scenario that caused failure (b): mocks only the model
+    call (same scope as the rest of this file) and inspects the REAL
+    prompt app/agent/llm.py::assess_evidence() builds -- confirms the
+    "named vendor overrides retrieval noise" guidance is actually present
+    for both the route-criteria text and the candidate_note, and that the
+    candidates shown are the real (non-identical) labels."""
+    candidates_raw = [
+        {"chunk_id": "demo_001", "source": "synthetic_demo", "text": "SAMPLE COFFEE CO.\nTOTAL 9.75"},
+        {"chunk_id": "demo_005", "source": "synthetic_demo", "text": "DEMO PIZZA KITCHEN\nTOTAL 12.00"},
+    ]
+    prompt_candidates = format_candidates(candidates_raw)
+
+    fake_response = Mock()
+    fake_response.choices = [Mock(message=Mock(content=(
+        '{"route": "insufficient_evidence", "answer": null, "clarification_question": null, '
+        '"cited_passage_ids": [], "reasoning": "payment method not stated"}'
+    )))]
+    fake_client = Mock()
+    fake_client.chat.completions.create.return_value = fake_response
+
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence(
+            "What payment method was used on the Sample Coffee Co. receipt?",
+            gathered_context="[passage_id=demo_001] (synthetic_demo)\nSAMPLE COFFEE CO.\nTOTAL 9.75",
+            candidates=prompt_candidates,
+        )
+
+    sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "already names a specific vendor or document" in sent_prompt
+    assert "SAMPLE COFFEE CO." in sent_prompt
+    assert "DEMO PIZZA KITCHEN" in sent_prompt
+    # The candidate_note's choice list (not gathered_context, which
+    # legitimately carries the real "(synthetic_demo)" source tag) must
+    # not list the same useless label twice.
+    assert "- synthetic_demo" not in sent_prompt
+    assert result["route"] == "insufficient_evidence"

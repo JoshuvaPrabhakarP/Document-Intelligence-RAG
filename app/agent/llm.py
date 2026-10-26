@@ -140,9 +140,12 @@ def assess_evidence(question: str, gathered_context: str, candidates: list[dict]
         choices = "\n".join(f"- {c['label']}" for c in candidates)
         candidate_note = (
             f"\n\nRetrieval also found these distinct documents comparably relevant to this question:\n"
-            f"{choices}\nOnly treat this as grounds for \"clarify\" if they are actually relevant AND "
-            "could give genuinely different answers to this specific question -- if none of them "
-            "actually address the question, that's \"insufficient_evidence\", not \"clarify\"."
+            f"{choices}\nOnly treat this as grounds for \"clarify\" if the ORIGINAL QUESTION ITSELF "
+            "doesn't already say which document/vendor it means, AND these candidates could genuinely "
+            "give different answers to it. If the question already names a specific vendor or document, "
+            "these other candidates are retrieval noise, not alternatives -- do not ask which one; use "
+            "\"insufficient_evidence\" instead if the named one doesn't answer the question. Likewise, if "
+            "none of them actually address the question, that's \"insufficient_evidence\", not \"clarify\"."
         )
     prompt = f"""Question: {question}
 
@@ -163,8 +166,8 @@ is, do not adopt the conflicting claim — use the printed value and say so in y
 
 Decide the route:
 - "answer" if the context contains enough information to answer the question directly. Cite the passage_id(s) you used.
-- "clarify" if the question itself is ambiguous or underspecified — it could refer to more than one document, vendor, or value (e.g. "What is the total?" with no document named), and asking the user which one they mean would let you answer. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence". It also applies when retrieval found MULTIPLE comparably-relevant documents that could each independently and plausibly answer the question with a DIFFERENT value, even if the question's own wording doesn't look ambiguous in isolation — silently picking one of several equally-valid candidates is worse than asking.
-- "insufficient_evidence" only if the question is specific enough to search for, but a reasonable search genuinely found nothing relevant — the information just isn't in the available documents. This is still correct even if multiple documents were retrieved, as long as none of them are actually relevant to the question.
+- "clarify" if the question ITSELF doesn't say which document, vendor, or value it means (e.g. "What is the total?" with no document named), and asking the user which one they mean would let you answer. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence". It also applies when the question names no specific document AND retrieval found MULTIPLE comparably-relevant documents that could each independently and plausibly answer it with a DIFFERENT value — silently picking one of several equally-valid candidates is worse than asking. Do NOT use "clarify" to ask which document when the question ALREADY names one (a specific vendor, business name, or document) — in that case the document is already chosen; other documents retrieval happens to return alongside it are not a reason to ask again, see "insufficient_evidence" below.
+- "insufficient_evidence" if the question is specific enough to search for (including when it already names a specific document/vendor) but a reasonable search genuinely found nothing relevant to what's being ASKED — the information just isn't in the available documents. This is still correct even if multiple documents were retrieved, as long as none of them actually answer the question being asked: a question naming one vendor is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, when the question already said which document it means.
 
 Respond with the route, the answer (only if route is "answer"), a clarification_question (only if route is "clarify", naming the specific candidates from the list above if one was given), the passage_id(s) actually used to answer (if any), and brief reasoning.
 

@@ -105,14 +105,36 @@ def cluster_candidate_documents(pool: list[dict], margin: float = DEFAULT_MARGIN
     return candidates[:MAX_CANDIDATES]
 
 
+def _distinguishes(candidates: list[dict]) -> bool:
+    """True if 'source' actually tells the candidates apart (e.g. upload
+    mode, where it's the original filename). False when every candidate
+    shares the same value -- the demo/research corpus sets 'source' to a
+    fixed dataset identifier ("synthetic_demo") for every document, not a
+    per-document name, so using it as a label there would present the
+    model (and, if ever shown directly, the user) with N identical
+    choices -- not a hint, just noise that looks like a broken signal.
+    Trivially true for fewer than 2 candidates -- there's nothing to
+    distinguish from, so 'source' is as good a label as any."""
+    return len(candidates) < 2 or len({c["source"] for c in candidates}) > 1
+
+
 def format_candidates(candidates: list[dict]) -> list[dict]:
     """Human-readable choices for a clarifying question -- vendor/source,
     filename, and page where applicable (per the explicit "vendor,
     filename, and page" requirement). Pass the result to a prompt, not to
-    the user directly -- callers build the actual clarifying question text."""
+    the user directly -- callers build the actual clarifying question text.
+
+    Falls back to the first line of the chunk's own text as the label when
+    'source' doesn't distinguish the candidates (see _distinguishes()) --
+    a receipt/invoice's own first line is reliably its vendor/business
+    name by construction of the document type, for ANY corpus (demo,
+    research, or upload), not a lookup keyed to a specific question or a
+    privileged "ground truth" field that only exists for synthetic data."""
+    use_source = _distinguishes(candidates)
     out = []
     for c in candidates:
         page = _page_number(c["chunk_id"])
-        label = c["source"] + (f" (page {page})" if page else "")
+        base = c["source"] if use_source else c.get("text", "").strip().splitlines()[0][:60]
+        label = base + (f" (page {page})" if page else "")
         out.append({"source": c["source"], "chunk_id": c["chunk_id"], "label": label})
     return out

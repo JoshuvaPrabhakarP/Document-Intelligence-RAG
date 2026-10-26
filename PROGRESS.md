@@ -772,3 +772,45 @@ Both are worth a prompt-tuning pass if this model is adopted for real, but are n
 This replaces the earlier worst-case/assumption-based estimate (~$0.16 / ~$0.79) with real measured averages, which came in lower because actual token usage was well under the conservative 2,000-token assumption. **Caveat stated plainly**: this is a 9-flow sample (excluding the thinking-enabled outlier), not a statistically robust average — real traffic mix and question complexity will vary this.
 
 No full evaluation (`eval/run_eval.py`'s 28-case harness) was run. No deployment happened. `eval/EVALUATION_REPORT.md` and `eval/POSTFIX_REPORT.md` are unchanged and still correctly describe the original Ollama/Qwen3:8b results — this test's results live only in this section and in `eval/results/together_compat_test.json`, never merged into those reports.
+
+## Milestone 5 continued — fixed both routing failures (#3, #6) found above
+
+Root-caused both before touching any prompt:
+
+**Root cause of #3 (Standard RAG missed an ambiguous question)**: `app/disambiguation.py::format_candidates()` labeled every candidate using `source`, which for the demo/research corpus is a fixed dataset identifier (`"synthetic_demo"`) — the SAME string for every document, not a per-document name (upload mode's `source` is the original filename, already distinguishing, which is why this never showed up there). Confirmed directly: for "What is the total?", `cluster_candidate_documents()` correctly found 4 real candidate documents, but `format_candidates()` turned them into 4 *identical* "synthetic_demo" choices in the prompt — a disambiguation signal that looks broken, not helpful. A live call confirmed the model's actual raw response was a literal `"I don't know."`, not a near-miss clarification attempt — it had no usable signal to act on.
+
+**Root cause of #6 (Agent falsely clarified instead of insufficient_evidence)**: the "clarify" criterion in `app/agent/llm.py::assess_evidence()`'s prompt said retrieval finding multiple comparably-relevant documents is grounds for clarify "even if the question's own wording doesn't look ambiguous in isolation" — true in general, but with no carve-out for a question that **already names a specific vendor**. "What payment method was used on the Sample Coffee Co. receipt?" names its document; other, unrelated vendors' receipts scoring similarly (because none of them — including the right one — actually mention a payment method) is retrieval noise, not grounds to ask which receipt was meant.
+
+### Fixes (general decision rules, not hardcoded to these two questions)
+
+1. `format_candidates()` now falls back to the candidate's own first line of text (reliably a receipt's vendor name, for ANY corpus) whenever `source` doesn't distinguish the candidates from each other — checked generically (do the candidates' `source` values differ at all), not by corpus name.
+2. Both routing prompts (`scripts/llm_client.py::build_prompt()`'s disambiguation block, `app/agent/llm.py::assess_evidence()`'s route criteria and candidate_note) now state explicitly: if the question already names a specific vendor/document, other comparably-scored documents are retrieval noise, not alternative candidates — don't ask which one; fall back to insufficient_evidence if the named one doesn't answer the question.
+
+Thinking stayed disabled throughout (no change to the `think`/`reasoning` flags).
+
+### Deterministic regression coverage added (`tests/test_disambiguation.py`)
+
+No real model calls — mocks only the model/evidence-assessment call, same scope as the rest of that file:
+- `test_format_candidates_falls_back_to_text_when_source_is_identical` — the exact bug, unit-tested directly.
+- `test_format_candidates_still_prefers_source_when_it_distinguishes` — upload mode's filename-based labeling must be unaffected.
+- `test_standard_prompt_distinguishes_identically_sourced_candidates` — calls the real `build_prompt()` and asserts the actual prompt text shows distinguishable labels and the new guard sentence, not the old duplicated label.
+- `test_agent_prompt_tells_model_named_vendor_overrides_candidate_noise` — calls the real `assess_evidence()` (client mocked) and asserts the same for its prompt.
+
+Full suite: **80 passed, 11 skipped** (the skips are the pre-existing real-Ollama-only tests in `tests/test_integration.py`/`tests/test_injection.py`, which skip themselves when Ollama isn't reachable — expected now that `OLLAMA_BASE_URL` points at Together instead of localhost, not a regression).
+
+### Live verification against the real hosted model (original cases + fresh paraphrases)
+
+`eval/together_routing_fix_verification.py` (new, separate from `eval/together_compat_test.py` — that original report is untouched) re-ran both original failing cases plus one fresh paraphrase of each:
+
+| Case | Expected | Observed | Result |
+|---|---|---|---|
+| "What is the total?" (original) | clarify | clarify — asked which of 5 real vendor names | ✅ |
+| "Could you tell me the total amount?" (paraphrase) | clarify | clarify — asked which of 5 real vendor names | ✅ |
+| "What payment method was used on the Sample Coffee Co. receipt?" (original) | insufficient_evidence | insufficient_evidence | ✅ |
+| "How was the purchase at Sample Coffee Co. paid for?" (paraphrase) | insufficient_evidence | **answer** (see below) | ❌ |
+
+**The fourth result is a separate, more serious finding, reported honestly rather than folded into "still some flakiness"**: this paraphrase got the model to fabricate or misattribute a fact. Rerun twice: once it answered "paid for with cash" (the receipt text has no payment-method field at all — a straight hallucination), once it answered "paid for with a total of $9.75" (conflating "how was it paid for" with "what was the total," then citing that as if it answered the question). Both are grounding/comprehension failures on this specific idiomatic phrasing, not a routing-architecture bug — the routing fix above worked correctly on every case that actually named the ambiguity or the absent attribute in more literal wording. This is flagged as a known limitation of this model on idiomatic paraphrases of "insufficient evidence" questions, explicitly **out of scope** of the two routing-rule fixes just made (fixing it would mean tightening grounding/anti-hallucination behavior generally, a different, larger change not authorized in this round) — not deployed around, not hidden.
+
+Cumulative spend across every real call made in this entire hosted-model engagement (the URL/auth verification call + the original 10-question test + this verification run + one extra diagnostic re-run of the failing paraphrase): **$0.006090 of the $0.25 budget.**
+
+No deployment happened. No full evaluation was run.

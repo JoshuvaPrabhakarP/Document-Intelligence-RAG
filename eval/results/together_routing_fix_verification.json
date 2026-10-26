@@ -1,0 +1,196 @@
+{
+  "provider": "https://api.together.ai/v1",
+  "model": "Qwen/Qwen3.5-9B",
+  "budget_usd": 0.25,
+  "prior_spend_usd": 0.0041937,
+  "total_spent_usd": 0.005629,
+  "spent_this_run_usd": 0.001436,
+  "stopped_early_for_budget": false,
+  "results": [
+    {
+      "label": "1-standard-clarify-original",
+      "workflow": "standard",
+      "question": "What is the total?",
+      "expected_route": "clarify",
+      "observed_route": "clarify",
+      "passed": true,
+      "detail": "answer=None clarification_question='Which vendor (Menu, DEMO PIZZA KITCHEN, DEMO CLOTHING OUTLET, MOCK BOOKSTORE, or PLACEHOLDER PHARMACY) do you mean?'",
+      "error": null,
+      "model_call_count": 1,
+      "calls": [
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 937.6,
+          "had_tools_param": false,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": false,
+          "usage_status": "measured",
+          "prompt_tokens": 863,
+          "completion_tokens": 43,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000157,
+          "cumulative_cost_usd": 0.004351
+        }
+      ],
+      "total_latency_ms": 937.6,
+      "total_prompt_tokens": 863,
+      "total_completion_tokens": 43,
+      "total_estimated_cost_usd": 0.000157
+    },
+    {
+      "label": "2-standard-clarify-paraphrase",
+      "workflow": "standard",
+      "question": "Could you tell me the total amount?",
+      "expected_route": "clarify",
+      "observed_route": "clarify",
+      "passed": true,
+      "detail": "answer=None clarification_question='Which vendor do you mean (Menu, PLACEHOLDER PHARMACY, DEMO PIZZA KITCHEN, SAMPLE COFFEE CO., or MOCK BOOKSTORE)?'",
+      "error": null,
+      "model_call_count": 1,
+      "calls": [
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 617.3,
+          "had_tools_param": false,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": false,
+          "usage_status": "measured",
+          "prompt_tokens": 845,
+          "completion_tokens": 40,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000154,
+          "cumulative_cost_usd": 0.004505
+        }
+      ],
+      "total_latency_ms": 617.3,
+      "total_prompt_tokens": 845,
+      "total_completion_tokens": 40,
+      "total_estimated_cost_usd": 0.000154
+    },
+    {
+      "label": "3-agent-insufficient-original",
+      "workflow": "agent",
+      "question": "What payment method was used on the Sample Coffee Co. receipt?",
+      "expected_route": "insufficient_evidence",
+      "observed_route": "insufficient_evidence",
+      "passed": true,
+      "detail": "answer=\"I don't have enough information in the available documents to answer that.\" clarification_question=None",
+      "error": null,
+      "model_call_count": 4,
+      "calls": [
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 1030.7,
+          "had_tools_param": true,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": true,
+          "usage_status": "measured",
+          "prompt_tokens": 725,
+          "completion_tokens": 45,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000135,
+          "cumulative_cost_usd": 0.004639
+        },
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 1493.3,
+          "had_tools_param": true,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": true,
+          "usage_status": "measured",
+          "prompt_tokens": 888,
+          "completion_tokens": 38,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.00016,
+          "cumulative_cost_usd": 0.0048
+        },
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 972.6,
+          "had_tools_param": true,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": false,
+          "usage_status": "measured",
+          "prompt_tokens": 1077,
+          "completion_tokens": 27,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.00019,
+          "cumulative_cost_usd": 0.00499
+        },
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 851.4,
+          "had_tools_param": false,
+          "had_json_schema_response_format": true,
+          "returned_tool_calls": false,
+          "usage_status": "measured",
+          "prompt_tokens": 833,
+          "completion_tokens": 76,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000161,
+          "cumulative_cost_usd": 0.00515
+        }
+      ],
+      "total_latency_ms": 4348.0,
+      "total_prompt_tokens": 3523,
+      "total_completion_tokens": 186,
+      "total_estimated_cost_usd": 0.000646
+    },
+    {
+      "label": "4-agent-insufficient-paraphrase",
+      "workflow": "agent",
+      "question": "How was the purchase at Sample Coffee Co. paid for?",
+      "expected_route": "insufficient_evidence",
+      "observed_route": "answer",
+      "passed": false,
+      "detail": "answer='The purchase at Sample Coffee Co. was paid for with cash.' clarification_question=''",
+      "error": null,
+      "model_call_count": 3,
+      "calls": [
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 2481.2,
+          "had_tools_param": true,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": true,
+          "usage_status": "measured",
+          "prompt_tokens": 724,
+          "completion_tokens": 45,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000134,
+          "cumulative_cost_usd": 0.005285
+        },
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 1406.7,
+          "had_tools_param": true,
+          "had_json_schema_response_format": false,
+          "returned_tool_calls": false,
+          "usage_status": "measured",
+          "prompt_tokens": 887,
+          "completion_tokens": 71,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000169,
+          "cumulative_cost_usd": 0.005453
+        },
+        {
+          "model": "Qwen/Qwen3.5-9B",
+          "latency_ms": 2255.5,
+          "had_tools_param": false,
+          "had_json_schema_response_format": true,
+          "returned_tool_calls": false,
+          "usage_status": "measured",
+          "prompt_tokens": 833,
+          "completion_tokens": 139,
+          "reasoning_tokens": null,
+          "estimated_cost_usd": 0.000176,
+          "cumulative_cost_usd": 0.005629
+        }
+      ],
+      "total_latency_ms": 6143.4,
+      "total_prompt_tokens": 2444,
+      "total_completion_tokens": 255,
+      "total_estimated_cost_usd": 0.000479
+    }
+  ]
+}
