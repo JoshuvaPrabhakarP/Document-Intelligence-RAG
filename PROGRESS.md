@@ -814,3 +814,46 @@ Full suite: **80 passed, 11 skipped** (the skips are the pre-existing real-Ollam
 Cumulative spend across every real call made in this entire hosted-model engagement (the URL/auth verification call + the original 10-question test + this verification run + one extra diagnostic re-run of the failing paraphrase): **$0.006090 of the $0.25 budget.**
 
 No deployment happened. No full evaluation was run.
+
+## Milestone 5 continued — fixed the unsupported payment-method answers (evidence-support gate)
+
+The out-of-scope finding flagged above (the model fabricating "paid with cash" / conflating "paid for" with "the total was $9.75") was inspected before writing any fix.
+
+**Where the unsupported information entered**: `app/agent/llm.py::assess_evidence()`'s reasoning field for the failing run said, almost verbatim, "the receipt clearly lists the items... and shows a TOTAL of 9.75, which..." — the model treated *the document being real, relevant, and correctly identified* as if that were evidence for the *specific fact asked about* (payment method), which was never stated in it at all. A citation to a real, relevant `passage_id` was being accepted as proof of support, when it only proves the right document was found.
+
+### The general rule implemented (not specific to payment questions)
+
+`EVIDENCE_SCHEMA` (`app/agent/llm.py`) gained a new required field, `supporting_quote`: when `route` is `"answer"`, the model must supply a short, **verbatim** (word-for-word) excerpt from the cited passage that states the answer. The route-decision prompt now says explicitly: naming the right vendor/document only tells the model *which* document to check — it does not establish that the requested attribute is written in it; if it can't quote the literal words, that's `insufficient_evidence`, not `answer`.
+
+Critically, **the model's own claim isn't trusted** — `assess_evidence()` verifies `supporting_quote` is a real (whitespace/case-normalized) substring of the actual retrieved text before letting `route="answer"` through; if it's missing or not literally present, the route is programmatically downgraded to `insufficient_evidence` and `answer` is cleared, regardless of what the model said. This is a code-level backstop, not just a prompt instruction — it catches the exact failure mode even if a future model ignores the instruction, because nothing about the check references payment methods, vendors, or any specific question; it only compares the model's own quote against the real retrieved text.
+
+Scoped to the Agent workflow only, where the bug was found and where the existing structured JSON-schema call made this a clean, no-extra-cost fix (one new field in the schema it already uses). Standard RAG's generation is plain free text with no equivalent per-answer structured field to attach the same verification to without a larger, riskier protocol change to its prompt format — not done in this round; flagged here rather than silently left as a gap.
+
+### Deterministic behavioral regression tests (`tests/test_agent.py`)
+
+Call the real `assess_evidence()` function (only the model client is mocked) and assert actual route/answer outcomes, not prompt wording:
+- A genuinely supported answer (fact present, quoted verbatim) passes through unchanged.
+- A fabricated quote not present anywhere in the retrieved text is downgraded to `insufficient_evidence`.
+- An answer with no `supporting_quote` at all is downgraded the same way — a citation alone is never enough.
+- Whitespace/case differences between the quote and source don't cause a false rejection (the match is still a real substring check, not fuzzy/semantic).
+
+Full suite: **84 passed, 11 skipped** (same expected skips as before — real-Ollama-only tests self-skipping since `OLLAMA_BASE_URL` now points at Together). One transient, order-dependent flake was observed on a single full-suite run (`test_assess_evidence_receives_the_full_clarification_context_on_resume` failed once, passed both in isolation and on an immediate full-suite rerun) — noted honestly as pre-existing test-isolation flakiness, not traced to this change, and not silently dismissed.
+
+### Live verification against the real hosted model
+
+`eval/together_evidence_support_verification.py` (new, separate — `together_compat_test.json` and `together_routing_fix_verification.json` are both untouched):
+
+| Check | Expected | Result |
+|---|---|---|
+| Original failing question ("What payment method...Sample Coffee Co....?") | insufficient_evidence | ✅ |
+| Previously-failing paraphrase ("How was the purchase...paid for?") | insufficient_evidence | ✅ |
+| Fresh paraphrase ("...pay in cash or by card?") | insufficient_evidence | ✅ |
+| Fresh paraphrase ("What was the method of payment...?") | insufficient_evidence | ✅ |
+| Synthetic receipt WITH an explicit "Payment Method: Credit Card" line (via the same `execute_search_documents` patch technique `tests/test_agent.py` already uses for injection tests — fabricated test data, not a real document) | answer, mentioning Credit Card | ✅ — answered correctly, confirming the gate doesn't just reject everything |
+| Regression: total + citation (Example Grocers Inc.) | answer, "42.17" | ✅ |
+| Regression: ambiguous clarify ("What is the tax?") | clarify | ✅ |
+| A different absent-attribute domain ("loyalty rewards discount", not payment) | insufficient_evidence | ✅ — confirms the rule is general, not special-cased to payment questions |
+
+**All 8 live checks passed.** Cumulative spend across the entire engagement: **$0.011102 of the $0.25 budget** (this round: $0.005012).
+
+No deployment happened. No full evaluation was run.

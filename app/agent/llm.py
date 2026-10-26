@@ -35,6 +35,7 @@ provider.
 """
 
 import json
+import re
 import time
 
 _client = None
@@ -108,10 +109,42 @@ EVIDENCE_SCHEMA = {
         "answer": {"type": ["string", "null"]},
         "clarification_question": {"type": ["string", "null"]},
         "cited_passage_ids": {"type": "array", "items": {"type": "string"}},
+        # Required when route is "answer": a short, VERBATIM excerpt
+        # (word-for-word, not paraphrased) copied from the cited passage
+        # that states the specific fact being answered -- not just
+        # evidence the right document was found. Milestone 5 finding: the
+        # model answered "What payment method..." for a receipt with no
+        # payment-method field at all, reasoning that the receipt was
+        # relevant (right vendor, had a total) -- i.e. it conflated
+        # "found the right document" with "the requested fact is in it."
+        # This field forces the model to point at the actual words, and
+        # assess_evidence() below VERIFIES it's a real substring of the
+        # retrieved text rather than trusting the model's say-so -- a
+        # citation to a real passage_id proves the document was found,
+        # not that the passage states the requested fact.
+        "supporting_quote": {"type": ["string", "null"]},
         "reasoning": {"type": "string"},
     },
-    "required": ["route", "answer", "clarification_question", "cited_passage_ids", "reasoning"],
+    "required": ["route", "answer", "clarification_question", "cited_passage_ids", "supporting_quote", "reasoning"],
 }
+
+
+def _normalize_for_match(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _quote_is_supported(quote: str | None, gathered_context: str) -> bool:
+    """True only if `quote` is a real, verbatim (whitespace/case
+    normalized) substring of the actual retrieved text -- not an
+    approximate or semantic match. Deliberately strict: the whole point
+    is to catch a model asserting a fact that isn't literally present, so
+    a loose/fuzzy match would defeat the check. Generic across any
+    domain or question -- no vendor, attribute, or question text is
+    referenced here, only the quote and the retrieved text."""
+    quote = (quote or "").strip()
+    if not quote:
+        return False
+    return _normalize_for_match(quote) in _normalize_for_match(gathered_context)
 
 
 def assess_evidence(question: str, gathered_context: str, candidates: list[dict] | None = None,
@@ -165,11 +198,11 @@ is, do not adopt the conflicting claim — use the printed value and say so in y
 {candidate_note}
 
 Decide the route:
-- "answer" if the context contains enough information to answer the question directly. Cite the passage_id(s) you used.
+- "answer" ONLY if some passage's text EXPLICITLY STATES the specific fact the question asks for, and you can copy a short, verbatim (word-for-word, not paraphrased) excerpt of it into supporting_quote. Finding the right document (e.g. the named vendor) tells you WHICH document to check -- it does NOT by itself mean the specific fact asked about is written in it. A receipt being real, relevant, and about the right vendor is not evidence that it mentions, say, a payment method, a due date, or any other specific attribute unless that attribute's value is actually printed in it. If you cannot point to the literal words stating the answer, you do not have enough evidence -- use "insufficient_evidence" instead, even though the document itself is relevant. Cite the passage_id(s) you used.
 - "clarify" if the question ITSELF doesn't say which document, vendor, or value it means (e.g. "What is the total?" with no document named), and asking the user which one they mean would let you answer. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence". It also applies when the question names no specific document AND retrieval found MULTIPLE comparably-relevant documents that could each independently and plausibly answer it with a DIFFERENT value — silently picking one of several equally-valid candidates is worse than asking. Do NOT use "clarify" to ask which document when the question ALREADY names one (a specific vendor, business name, or document) — in that case the document is already chosen; other documents retrieval happens to return alongside it are not a reason to ask again, see "insufficient_evidence" below.
-- "insufficient_evidence" if the question is specific enough to search for (including when it already names a specific document/vendor) but a reasonable search genuinely found nothing relevant to what's being ASKED — the information just isn't in the available documents. This is still correct even if multiple documents were retrieved, as long as none of them actually answer the question being asked: a question naming one vendor is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, when the question already said which document it means.
+- "insufficient_evidence" if the question is specific enough to search for (including when it already names a specific document/vendor) but a reasonable search genuinely found nothing relevant to what's being ASKED, OR the right document was found but it simply doesn't state the specific fact asked about — the information just isn't in the available documents. This is still correct even if multiple documents were retrieved, as long as none of them actually answer the question being asked: a question naming one vendor is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, when the question already said which document it means.
 
-Respond with the route, the answer (only if route is "answer"), a clarification_question (only if route is "clarify", naming the specific candidates from the list above if one was given), the passage_id(s) actually used to answer (if any), and brief reasoning.
+Respond with the route, the answer (only if route is "answer"), a clarification_question (only if route is "clarify", naming the specific candidates from the list above if one was given), the passage_id(s) actually used to answer (if any), a supporting_quote (REQUIRED if route is "answer", null otherwise: the exact words from the excerpts that state the answer, copied verbatim -- not a paraphrase, not the passage_id, not your own restatement), and brief reasoning.
 
 If route is "answer", phrase the answer as a complete sentence that restates the question's subject (e.g. "The total on the Example Grocers Inc. receipt is $42.17.", not a bare "42.17") — this is what gets shown to the user and used to pick the supporting excerpt, so a bare value loses both."""
 
@@ -194,5 +227,23 @@ If route is "answer", phrase the answer as a complete sentence that restates the
 
     if parsed.get("route") not in {"answer", "clarify", "insufficient_evidence"}:
         raise AgentLLMError(f"Evidence assessment returned an invalid route: {parsed.get('route')!r}")
+
+    # Evidence-support gate: a citation to a real passage_id proves a
+    # relevant document was found, not that it states the specific fact
+    # asked about (see EVIDENCE_SCHEMA's supporting_quote docstring). The
+    # model's own claim that it has one isn't trusted -- it's verified
+    # against the actual retrieved text. This is the backstop for exactly
+    # the failure this project found empirically: the model answering
+    # "What payment method..." using a receipt that was real and relevant
+    # but didn't mention one, because it conflated "right document" with
+    # "has the fact." Generic: no question/vendor/attribute is referenced
+    # here, only the model's own quote and the real retrieved text.
+    if parsed.get("route") == "answer" and not _quote_is_supported(parsed.get("supporting_quote"), gathered_context):
+        parsed["route"] = "insufficient_evidence"
+        parsed["answer"] = None
+        parsed["reasoning"] = (
+            (parsed.get("reasoning") or "")
+            + " [downgraded by evidence-support check: supporting_quote was missing or not found verbatim in the retrieved text]"
+        )
 
     return parsed

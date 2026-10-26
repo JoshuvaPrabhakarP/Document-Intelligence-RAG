@@ -22,7 +22,7 @@ test_integration.py):
 
 import re
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pymupdf
@@ -30,6 +30,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agent import graph as agent_graph
+from app.agent.llm import assess_evidence
 from app.agent.state import new_state, resume_state
 from app.agent.tools import ToolArgumentError, execute_fetch_source, execute_search_documents
 from app.config import get_settings
@@ -713,3 +714,106 @@ def test_real_clarification_followup_actually_resolves():
 
     assert body2["route"] == "answer", f"did not resolve: {body2}"
     assert "10.00" in (body2["answer"] or "")
+
+
+# ---------------------------------------------------------------------------
+# Evidence-support gate (Milestone 5 finding): the real hosted model
+# answered "What payment method was used...?" using a receipt that was a
+# real, relevant, correctly-identified document but had no payment-method
+# field at all -- it reasoned the document was relevant (right vendor, had
+# a total) and treated that as if it were evidence for the specific fact
+# asked about. assess_evidence() now requires a verbatim supporting_quote
+# when route="answer" and VERIFIES it's a real substring of the retrieved
+# text rather than trusting the model's own say-so, downgrading to
+# insufficient_evidence if not. These tests exercise the REAL
+# assess_evidence() function (only the model client is mocked) and check
+# actual behavior -- route/answer values -- not prompt wording. Generic:
+# none of this is specific to payment questions, vendors, or receipts.
+# ---------------------------------------------------------------------------
+
+def _mock_assess_evidence_response(**fields):
+    """A fake client whose chat.completions.create() returns an
+    EVIDENCE_SCHEMA-shaped JSON response with the given fields, standing
+    in for a real model response -- same pattern as
+    tests/test_disambiguation.py's agent prompt test."""
+    base = {"route": "answer", "answer": None, "clarification_question": None,
+            "cited_passage_ids": [], "supporting_quote": None, "reasoning": "test"}
+    base.update(fields)
+    import json
+    fake_response = Mock()
+    fake_response.choices = [Mock(message=Mock(content=json.dumps(base)))]
+    fake_client = Mock()
+    fake_client.chat.completions.create.return_value = fake_response
+    return fake_client
+
+
+def test_assess_evidence_accepts_an_answer_with_a_real_verbatim_quote():
+    """Baseline: a genuinely supported answer (the fact IS in the text,
+    and the model quotes it verbatim) must pass through unchanged -- the
+    gate must not be so strict it rejects correct, grounded answers."""
+    gathered_context = "[passage_id=p1] (synthetic_demo)\nSAMPLE COFFEE CO.\nPayment Method: Cash\nTOTAL 9.75"
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="The Sample Coffee Co. receipt was paid for with Cash.",
+        cited_passage_ids=["p1"], supporting_quote="Payment Method: Cash",
+    )
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence("How was the Sample Coffee Co. purchase paid for?", gathered_context)
+
+    assert result["route"] == "answer"
+    assert result["answer"] == "The Sample Coffee Co. receipt was paid for with Cash."
+
+
+def test_assess_evidence_rejects_a_fabricated_quote_not_in_the_retrieved_text():
+    """The actual observed failure, reproduced deterministically: the
+    model claims "answer" and cites a real passage_id, but the quote it
+    offers as support (a payment method) never appears in the retrieved
+    text at all -- the receipt only has a total, no payment field. Must
+    be downgraded to insufficient_evidence, not trusted on citation alone."""
+    gathered_context = "[passage_id=p1] (synthetic_demo)\nSAMPLE COFFEE CO.\nTOTAL 9.75"
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="The purchase at Sample Coffee Co. was paid for with cash.",
+        cited_passage_ids=["p1"], supporting_quote="paid with cash",
+    )
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence("How was the purchase at Sample Coffee Co. paid for?", gathered_context)
+
+    assert result["route"] == "insufficient_evidence"
+    assert result["answer"] is None
+
+
+def test_assess_evidence_rejects_an_answer_with_no_supporting_quote_at_all():
+    """A real, relevant citation is not sufficient on its own: if the
+    model answers but provides no supporting_quote whatsoever, that is
+    treated the same as a fabricated one -- a citation alone never proves
+    support, per the explicit requirement this gate implements."""
+    gathered_context = "[passage_id=p1] (synthetic_demo)\nSAMPLE COFFEE CO.\nTOTAL 9.75"
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="The purchase was paid for with cash.",
+        cited_passage_ids=["p1"], supporting_quote=None,
+    )
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence("How was the purchase at Sample Coffee Co. paid for?", gathered_context)
+
+    assert result["route"] == "insufficient_evidence"
+    assert result["answer"] is None
+
+
+def test_assess_evidence_quote_match_is_whitespace_and_case_insensitive_only():
+    """The verification is deliberately strict (real substring, not fuzzy/
+    semantic matching) but must still tolerate harmless formatting
+    differences (case, extra whitespace) between the model's quote and
+    the source text -- otherwise correct answers would be rejected for
+    cosmetic reasons unrelated to whether the fact is actually present."""
+    gathered_context = "[passage_id=p1] (synthetic_demo)\nSAMPLE COFFEE CO.\nPAYMENT METHOD:   Cash\nTOTAL 9.75"
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="The Sample Coffee Co. receipt was paid for with cash.",
+        cited_passage_ids=["p1"], supporting_quote="payment method: cash",
+    )
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence("How was the Sample Coffee Co. purchase paid for?", gathered_context)
+
+    assert result["route"] == "answer"
