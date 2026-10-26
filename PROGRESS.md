@@ -940,3 +940,25 @@ Pricing below is from Google's published Cloud Run/Artifact Registry/Secret Mana
 ### Status
 
 No billable Google Cloud resource has been created. No deploy has been run. This section is a plan plus the concrete fixes/measurements that inform it — proceeding to actually create a GCP project, Artifact Registry repo, Secret Manager secret, or Cloud Run service requires the user's explicit go-ahead, per instruction.
+
+## Milestone 5 continued — Docker build blocked (no Docker in this sandbox); model weights baked into the image; final GCP plan locked to min-instances=0/max-instances=1/one worker
+
+**Docker is still not available in this sandboxed environment** (same check re-run: `docker`/`podman`/`buildah` all absent, no `/var/run/docker.sock`, no `/mnt/wsl/docker-desktop*` socket). This is WSL2 (`Ubuntu-24.04`, confirmed via `wsl.exe -l -v` and `/etc/os-release`), consistent with the user's own description. Since static inspection alone was explicitly ruled insufficient this round, the actual Docker build + container smoke tests (startup, readiness, a real Together agent query, citations, synthetic upload/OCR, clarification follow-up, fallback) **could not be run and are not claimed to have passed** — see the exact Docker Desktop WSL-integration steps in the chat response for how to unblock this, and once confirmed, the next session should run the build/smoke-test plan prepared below.
+
+### Model weights now baked into the image (Dockerfile change, not yet build-verified)
+
+Added a build-time `RUN python -c "..."` step that pre-downloads and caches both `BAAI/bge-large-en-v1.5` and `BAAI/bge-reranker-large` into `HF_HOME=/opt/hf_cache` inside the image, then sets `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` as runtime environment variables. The offline flags are the actual verification mechanism, not just documentation: if the cache were ever incomplete, the container would fail immediately at startup with a clear Hub-unreachable error instead of silently falling back to a slow runtime download — this is how "loads without downloading at runtime" gets proven once a real build runs, not merely hoped for. **Not yet verified by an actual build** (see blocker above) — image size, peak memory with the baked-in weights, and startup time are reported once the build runs, not estimated here.
+
+### Cloud Run configuration locked in
+
+Per instruction: `--min-instances=0`, `--max-instances=1`, one application worker (the Dockerfile's `CMD` already runs uvicorn with no `--workers` flag — unchanged, already correct). `min-instances=0` means the ~25 s cold-start measured earlier (now hopefully shorter with baked-in weights — to be re-measured once build-verified) is accepted on every post-idle first request, and `max-instances=1` is retained as architecturally required (not optional) given the in-memory session/rate-limit state documented in the prior section.
+
+### Documented: a warm instance does not guarantee session persistence
+
+Stated explicitly, since it's a real, non-obvious distinction: `min-instances=1` (or an instance simply staying warm under `min-instances=0` because traffic kept it alive) reduces how *often* a session is lost, but is **not a persistence guarantee**. Cloud Run can still recycle an instance — a new revision deploy, a platform-initiated maintenance restart, or (rarely) a failed health check — at any time, with no warning to in-flight sessions. The only way to make upload/clarification state actually durable across any of this is to move it out of process memory entirely (Redis/Firestore), which is not built. Added directly to the upload page's own hint text (`app/static/index.html`), not only here: uploads and clarification state "can also disappear sooner — without warning — if the server restarts, redeploys, or scales down; this isn't guaranteed storage."
+
+### Exact GCP setup, deployment commands, and final cost estimate
+
+Given in full in the chat response for this turn (account/project setup, API enablement, Artifact Registry, Secret Manager, build, and `gcloud run deploy` with the locked-in flags above, plus the budget-alerts-vs-spending-limits explanation) — not duplicated here to avoid the two drifting out of sync; this file records that it was given and the key numbers, not the copy-paste commands themselves.
+
+No billable resource created. No deploy run. Proceeding past this plan — including the Docker build itself — requires the user's explicit go-ahead.

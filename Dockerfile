@@ -31,6 +31,32 @@ RUN pip install --no-cache-dir \
 COPY requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
+# Bake the embedding (bge-large-en-v1.5, ~1.3GB) and reranker
+# (bge-reranker-large, ~2.2GB) model weights into the image at BUILD
+# time, rather than letting the app lazily download them from Hugging
+# Face Hub on the first production request (the previous behavior). A
+# first request downloading ~3.5GB over the network before it can
+# answer anything is a real reliability risk -- a slow/flaky network
+# path, or a request timeout, on literally the first request a cold
+# (min-instances=0) container ever serves. HF_HOME is set explicitly
+# so the build-time download and the runtime load both resolve to the
+# exact same path regardless of $HOME.
+ENV HF_HOME=/opt/hf_cache
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+from transformers import AutoTokenizer, AutoModelForSequenceClassification; \
+SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu'); \
+AutoTokenizer.from_pretrained('BAAI/bge-reranker-large'); \
+AutoModelForSequenceClassification.from_pretrained('BAAI/bge-reranker-large')"
+# Forces strict offline mode at RUNTIME (not during the build step
+# above, which still needs network to fetch the weights) -- this is
+# how "loads without downloading at runtime" is actually verified, not
+# just hoped for: if the cache were somehow incomplete, the app would
+# fail immediately with a clear Hub-unreachable error instead of
+# silently falling back to a slow download.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 # Only the app code and the specific research scripts the app imports at
 # runtime (fusion/bm25/dense retrieval, the reranker, the Ollama prompt
 # builder, metadata filtering) -- NOT the full scripts/ directory, which
