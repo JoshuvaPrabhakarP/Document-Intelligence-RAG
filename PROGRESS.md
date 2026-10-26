@@ -719,4 +719,56 @@ Using the test script's own `max_tokens=400` cap as a conservative ceiling (not 
 3. Add to your local `.env` (never paste the key in chat): `GENERATION_API_KEY=<the key>`, `OLLAMA_BASE_URL=https://api.together.ai/v1`, `OLLAMA_MODEL=Qwen/Qwen3.5-9B`.
 4. Tell me it's set — I'll verify the script's guard now passes (without ever seeing the key) and run the 10-question test, reporting real measured results in place of this estimate.
 
-Still true: no account, key, deployment, or charge exists. Full regression suite re-verified after the compatibility fix: **87/87 passing**.
+Still true at the time it was written: no account, key, deployment, or charge existed yet. Full regression suite re-verified after the compatibility fix: **87/87 passing**.
+
+## Milestone 5 continued — hosted-model compatibility test: RUN, real measured results
+
+Credentials were added to the local `.env` (never seen or logged here). Two real configuration bugs were found and fixed in `.env` before the test could succeed — both affected Standard RAG and the Agent workflow identically, since both build their OpenAI client the same way (`OpenAI(base_url=settings.ollama_base_url, ...)` in `app/generation/ollama_provider.py` and `app/agent/llm.py`):
+
+1. `OLLAMA_BASE_URL` was first set to `https://api.together.ai` — missing `/v1`. The OpenAI SDK appends `/chat/completions` to whatever `base_url` is; it does not add `/v1` itself.
+2. `OLLAMA_MODEL` was still the stale local value `qwen3:8b` from before this test was prepared.
+
+Fixed both, then verified with one minimal real call (`max_tokens=5`, captured the actual outgoing request URL via an `httpx` hook — never the `Authorization` header): resolved to `https://api.together.ai/v1/chat/completions`, HTTP 200, cost ~$0.0000037. Immediately after, `OLLAMA_BASE_URL` was found changed again to `https://api.together.ai/v1/chat/completions` (duplicated path — the file was being edited concurrently), which caused all 10 questions to fail on the first full test run with a Together 404 (`/v1/chat/completions/chat/completions is not supported on this API`) before any billable call completed (`$0.000000` spent, confirmed from the script's own tracked usage). Fixed back to `https://api.together.ai/v1` and reran — this time it worked end to end.
+
+### Results (real measured usage, Together.ai, `Qwen/Qwen3.5-9B`)
+
+| # | Question-flow | Workflow | Result | Model calls | Latency | Prompt / completion tokens | Cost |
+|---|---|---|---|---|---|---|---|
+| 1 | Correct total + citation | Standard | ✅ pass | 1 | 662 ms | 670 / 6 | $0.000115 |
+| 2 | Missing-info fallback | Standard | ✅ pass | 1 | 269 ms | 691 / 6 | $0.000119 |
+| 3 | Ambiguous → clarify | Standard | ❌ fail (behavioral) | 1 | 697 ms | 792 / 6 | $0.000136 |
+| 4 | Clarify follow-up → correct | Standard | ✅ pass | 1 | 433 ms | 679 / 6 | $0.000117 |
+| 5 | Correct total, genuine tool call | Agent | ✅ pass | 3 | 4547 ms | 3311 / 171 | $0.000606 |
+| 6 | Missing-info fallback | Agent | ❌ fail (behavioral) | 4 | 3245 ms | 3401 / 194 | $0.000626 |
+| 7 | Ambiguous → clarify, schema-accepted | Agent | ✅ pass | 3 | 5916 ms | 3346 / 476 | $0.000688 |
+| 8 | Clarify follow-up → correct | Agent | ✅ pass | 3 | 4985 ms | 5071 / 172 | $0.000904 |
+| 9 | Thinking ENABLED comparison | Standard | ❌ fail (see below) | 1 | 4454 ms | 648 / 400 | $0.000210 |
+| 10 | Agent consistency check | Agent | ✅ pass | 4 | 4572 ms | 3590 / 227 | $0.000667 |
+
+**7/10 passed. Total: 22 model calls, 22,199 input tokens, 1,664 output tokens, $0.004190 of the $0.25 budget (never close to the cap; `stopped_early_for_budget: false`).** Reasoning-token usage: `"unavailable"` for every call — Together's responses for this model never populated `completion_tokens_details.reasoning_tokens` in any call, including the thinking-ENABLED one, so there's nothing to double-count; its cost is already fully inside `completion_tokens`. Full per-call detail: `eval/results/together_compat_test.json`.
+
+**What genuinely worked, confirmed from real response fields, not assumed:**
+- Real model-issued tool calls: `had_tools_param=true` and `returned_tool_calls=true` on the first call of every agent flow (5, 6, 7, 8, 10) — the model, not the code, decided to call `search_documents`.
+- Schema-constrained structured output: `had_json_schema_response_format=true` on the final call of every agent flow, and every one parsed successfully as `EVIDENCE_SCHEMA` (no `AgentLLMError`, `error: null` throughout) — real evidence this model honors the `json_schema` response format for this app's actual schema, not just the docs' description of it.
+- The `reasoning: {"enabled": False}` / `think: False` dual-flag fix works on Together exactly as it does on Ollama — no errors from either.
+
+**The two behavioral failures (3, 6) are real model-judgment differences, not crashes or malformed output** — each call completed and returned a valid, schema-conformant response; the model's *routing choice* just differed from the expected one:
+- **#3**: "What is the total?" (no document named, 4 receipts exist) — expected `clarify`, got `insufficient_evidence` with no clarification question. The model failed to recognize the ambiguity here where Ollama's Qwen3:8b did.
+- **#6**: payment-method question with no matching evidence — expected `insufficient_evidence`, got `clarify` instead (asked which receipt, rather than reporting no evidence). The opposite miscalibration from #3.
+
+Both are worth a prompt-tuning pass if this model is adopted for real, but are not infrastructure bugs — flagging honestly rather than silently passing them.
+
+**#9 (thinking-enabled comparison) is an informative result, not a crash**: all 400 of the capped `max_tokens` were consumed as reasoning content; after `strip_thinking()` removed it, the visible answer was empty. Compared to the thinking-disabled single-call average (~515 ms, 4 questions), thinking-enabled latency was ~4454 ms — roughly an 8–9x multiplier on this one sample, consistent in direction with the ~13x finding against local Ollama (Milestone 2), though not a controlled rerun of the identical question so not directly comparable in magnitude. Confirms thinking mode should stay off for this app, same conclusion as before, now also true for the hosted model.
+
+### Monthly cost estimate — now measured, not assumed
+
+| | Measured average cost/query | Basis |
+|---|---|---|
+| Standard RAG query | ~$0.000122 | average of the 4 single-call Standard flows above |
+| Agent query | ~$0.000698 | average of the 5 Agent flows above (3–4 calls each) |
+| **200 queries/month** (60/40 standard/agent mix) | **~$0.070/month** | measured per-query averages, n=4 and n=5 samples |
+| **1,000 queries/month** (same mix) | **~$0.35/month** | same basis |
+
+This replaces the earlier worst-case/assumption-based estimate (~$0.16 / ~$0.79) with real measured averages, which came in lower because actual token usage was well under the conservative 2,000-token assumption. **Caveat stated plainly**: this is a 9-flow sample (excluding the thinking-enabled outlier), not a statistically robust average — real traffic mix and question complexity will vary this.
+
+No full evaluation (`eval/run_eval.py`'s 28-case harness) was run. No deployment happened. `eval/EVALUATION_REPORT.md` and `eval/POSTFIX_REPORT.md` are unchanged and still correctly describe the original Ollama/Qwen3:8b results — this test's results live only in this section and in `eval/results/together_compat_test.json`, never merged into those reports.
