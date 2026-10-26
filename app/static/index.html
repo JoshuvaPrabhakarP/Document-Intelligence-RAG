@@ -59,7 +59,7 @@
                 </svg>
               </div>
               <p><strong>Drag and drop</strong> a receipt here, or <span class="link">click to browse</span></p>
-              <p class="hint">JPG, PNG, or PDF · up to 10MB · up to 20 pages<br>Text extraction and OCR run on our server using open-source software (no third-party cloud OCR service) · automatically deleted after 30 minutes or when cleared</p>
+              <p class="hint">JPG, PNG, or PDF · up to 10MB · up to 20 pages<br>Text extraction and OCR run on our server using open-source software (no third-party cloud OCR service) · automatically deleted after 30 minutes or when cleared<br>When you ask a question, the relevant extracted excerpts from your document are sent to our hosted AI provider (Together.ai) to generate the answer — don't upload a document containing information you don't want shared with a third-party AI service.</p>
               <input type="file" id="file-input" class="sr-only" accept=".jpg,.jpeg,.png,.pdf" tabindex="-1" aria-hidden="true">
             </div>
 
@@ -93,14 +93,14 @@
             Ask a question
           </div>
           <div class="workflow-toggle" role="radiogroup" aria-label="Answering workflow">
-            <button type="button" class="wf-btn active" id="wf-standard" role="radio" aria-checked="true">
+            <button type="button" class="wf-btn" id="wf-standard" role="radio" aria-checked="false">
               Standard RAG
             </button>
-            <button type="button" class="wf-btn" id="wf-agent" role="radio" aria-checked="false">
+            <button type="button" class="wf-btn active" id="wf-agent" role="radio" aria-checked="true">
               Agent workflow
             </button>
           </div>
-          <p class="workflow-hint" id="workflow-hint">Retrieves once, then generates a grounded answer.</p>
+          <p class="workflow-hint" id="workflow-hint">Lets the model search/fetch sources itself, assess the evidence, and ask for clarification if your question is ambiguous. Verifies its cited evidence is really in the retrieved text before answering (not a guarantee against misreading correctly-quoted text).</p>
 
           <label for="question" class="sr-only">Your question</label>
           <textarea id="question" placeholder="Ask a question about the sample receipts…"></textarea>

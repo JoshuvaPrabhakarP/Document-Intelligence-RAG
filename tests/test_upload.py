@@ -95,7 +95,7 @@ def test_query_against_uploaded_receipt_returns_cited_answer():
     }
     from unittest.mock import patch
     with patch("app.main.pipeline.answer_from_retriever", return_value=fake_answer):
-        query_resp = session.post("/query", json={"question": "What is the total?", "mode": "upload"})
+        query_resp = session.post("/query", json={"question": "What is the total?", "mode": "upload", "workflow": "standard"})
 
     assert query_resp.status_code == 200
     body = query_resp.json()

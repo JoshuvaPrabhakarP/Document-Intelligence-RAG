@@ -234,7 +234,21 @@ def assess_evidence_node(state: AgentState) -> AgentState:
     state["route"] = result["route"]
     state["answer"] = result.get("answer")
     state["clarification_question"] = result.get("clarification_question")
-    state["cited_passage_ids"] = [p for p in result.get("cited_passage_ids", []) if p in state["retrieved_passages"]]
+    # Only an "answer" route may carry sources into the API response/UI --
+    # otherwise a stray cited_passage_id on a "clarify" or
+    # "insufficient_evidence" result (whether the model supplied one
+    # directly, or assess_evidence()'s evidence-support gate downgraded
+    # the route but left citations from the original "answer" attempt)
+    # would surface a "Sources" section next to a result that just said
+    # it doesn't have enough evidence -- app/main.py's _run_agent_query()
+    # builds `sources` straight from cited_passage_ids with no route
+    # check of its own, and the UI renders `sources` unconditionally
+    # whenever the list is non-empty (app/static/app.js), so this is the
+    # one place that must enforce it.
+    if result["route"] == "answer":
+        state["cited_passage_ids"] = [p for p in result.get("cited_passage_ids", []) if p in state["retrieved_passages"]]
+    else:
+        state["cited_passage_ids"] = []
     _trace(state, "assess_evidence", None, duration_ms, f"route={result['route']} | {result.get('reasoning', '')[:120]}")
     return state
 

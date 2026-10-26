@@ -294,6 +294,38 @@ def test_bogus_cited_passage_ids_are_filtered_out():
     assert all(pid in result["retrieved_passages"] for pid in result["cited_passage_ids"])
 
 
+def test_insufficient_evidence_never_carries_stray_citations_into_the_response():
+    """Milestone 5 finding, inspected while verifying that validated
+    evidence (not a stray citation) is what reaches the API response/UI:
+    app/main.py builds `sources` directly from cited_passage_ids with no
+    route check, and the frontend renders a Sources section whenever that
+    list is non-empty -- so a model returning "insufficient_evidence" but
+    STILL naming a passage_id it looked at (directly, or because
+    assess_evidence()'s evidence-support gate downgraded an "answer" but
+    left the original citation) would show a contradictory "Insufficient
+    evidence" result with a cited source attached. assess_evidence_node()
+    must clear cited_passage_ids for any route other than "answer"."""
+    def fake_assess(question, gathered_context, candidates=None, timeout_s=60):
+        real_pid = re.findall(r"passage_id=(\w+)", gathered_context)[0]
+        return {
+            "route": "insufficient_evidence", "answer": None, "clarification_question": None,
+            "cited_passage_ids": [real_pid], "reasoning": "looked at it but it doesn't answer the question",
+        }
+
+    with patch.object(agent_graph, "call_with_tools") as mock_llm, \
+         patch.object(agent_graph, "execute_search_documents") as mock_search, \
+         patch.object(agent_graph, "assess_evidence", side_effect=fake_assess):
+        mock_llm.side_effect = [
+            _llm_result(tool_calls=[_tool_call("t1", "search_documents", {"query": "payment method"})]),
+            _llm_result(content="done"),
+        ]
+        mock_search.return_value = [{"chunk_id": "demo_000", "source": "synthetic_demo", "text": "TOTAL 9.75", "score": 1.0}]
+        result = agent_graph.build_graph().invoke(new_state("What payment method was used?", "demo", None))
+
+    assert result["route"] == "insufficient_evidence"
+    assert result["cited_passage_ids"] == []
+
+
 # ---------------------------------------------------------------------------
 # Tool argument validation
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ tests/test_integration.py (skipped automatically if Ollama isn't reachable).
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -30,6 +31,32 @@ def test_ready_reports_structure():
     assert "checks" in body
     assert "index_files_present" in body["checks"]
     assert "generation_provider_reachable" in body["checks"]
+
+
+def test_ready_checks_generation_provider_via_generic_openai_endpoint_not_ollama_specific_one():
+    """Milestone 5 deployment-prep finding: /ready used to call Ollama's
+    own proprietary /api/tags, which only Ollama implements -- against a
+    hosted OpenAI-compatible provider (e.g. Together.ai) this always
+    reported generation_provider_reachable=False even while generation
+    itself worked, which would have kept a Cloud Run readiness probe from
+    ever passing. Must hit {base_url}/models -- part of the OpenAI-
+    compatible surface itself, not a provider-specific path -- so this
+    works unchanged for ANY configured provider, not hardcoded to one."""
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return httpx.Response(status_code=200, request=httpx.Request("GET", url))
+
+    with patch("app.main.httpx.get", side_effect=fake_get):
+        resp = client.get("/ready")
+
+    assert resp.status_code == 200
+    assert resp.json()["checks"]["generation_provider_reachable"] is True
+    assert captured["url"].endswith("/models")
+    assert "/api/tags" not in captured["url"]
+    assert "Authorization" in captured["headers"]
 
 
 def test_index_page_loads():
@@ -70,7 +97,7 @@ def test_query_returns_grounded_answer_with_sources():
         "generation_latency_ms": 789.0,
     }
     with patch("app.main.pipeline.answer", return_value=fake_result):
-        resp = client.post("/query", json={"question": "What is the total?", "top_k": 3})
+        resp = client.post("/query", json={"question": "What is the total?", "top_k": 3, "workflow": "standard"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -91,7 +118,7 @@ def test_query_insufficient_evidence_is_flagged():
         "generation_latency_ms": 500.0,
     }
     with patch("app.main.pipeline.answer", return_value=fake_result):
-        resp = client.post("/query", json={"question": "What is the capital of France?"})
+        resp = client.post("/query", json={"question": "What is the capital of France?", "workflow": "standard"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -109,7 +136,7 @@ def test_query_no_matching_documents_returns_empty_sources():
         "generation_latency_ms": None,
     }
     with patch("app.main.pipeline.answer", return_value=fake_result):
-        resp = client.post("/query", json={"question": "anything"})
+        resp = client.post("/query", json={"question": "anything", "workflow": "standard"})
 
     assert resp.status_code == 200
     assert resp.json()["generation_latency_ms"] is None
@@ -126,7 +153,7 @@ def test_generation_provider_failure_returns_clean_error_not_stack_trace():
         "error": "Ollama generation failed: connection refused",
     }
     with patch("app.main.pipeline.answer", return_value=fake_result):
-        resp = client.post("/query", json={"question": "anything"})
+        resp = client.post("/query", json={"question": "anything", "workflow": "standard"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -136,7 +163,7 @@ def test_generation_provider_failure_returns_clean_error_not_stack_trace():
 
 def test_unhandled_pipeline_exception_returns_503_not_stack_trace():
     with patch("app.main.pipeline.answer", side_effect=RuntimeError("disk full")):
-        resp = client.post("/query", json={"question": "anything"})
+        resp = client.post("/query", json={"question": "anything", "workflow": "standard"})
 
     assert resp.status_code == 503
     body = resp.json()

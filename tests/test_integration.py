@@ -36,7 +36,7 @@ def test_real_end_to_end_query_against_demo_corpus():
     client = TestClient(app)
     resp = client.post(
         "/query",
-        json={"question": "What is the total amount on the Example Grocers Inc. receipt?", "top_k": 3},
+        json={"question": "What is the total amount on the Example Grocers Inc. receipt?", "top_k": 3, "workflow": "standard"},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -53,7 +53,7 @@ def test_real_end_to_end_query_against_demo_corpus():
 
 def test_real_insufficient_evidence_on_off_topic_question():
     client = TestClient(app)
-    resp = client.post("/query", json={"question": "What is the capital of France?", "top_k": 3})
+    resp = client.post("/query", json={"question": "What is the capital of France?", "top_k": 3, "workflow": "standard"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["has_sufficient_evidence"] is False

@@ -12,8 +12,14 @@ class QueryRequest(BaseModel):
         description="'demo' (synthetic sample receipts) or 'upload' (this session's uploaded receipts only).",
     )
     workflow: str = Field(
-        default="standard",
-        description="'standard' (direct retrieve-then-generate) or 'agent' (LangGraph tool-calling workflow, Milestone 3).",
+        default="agent",
+        description=(
+            "'agent' (LangGraph tool-calling workflow, Milestone 3; DEFAULT as of Milestone 5 -- has a "
+            "verified evidence-support gate, app/agent/llm.py::assess_evidence(), that checks its cited "
+            "quote is a real substring of the retrieved text before answering) or 'standard' (direct "
+            "retrieve-then-generate; weaker grounding -- relies on the model saying \"I don't know\" with "
+            "no equivalent verification)."
+        ),
     )
 
 

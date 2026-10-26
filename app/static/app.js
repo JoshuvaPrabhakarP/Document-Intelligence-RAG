@@ -19,15 +19,20 @@ const MAX_PDF_PAGES = 20;
 
 const state = {
   mode: "demo",
-  workflow: "standard",
+  // Agent is the default (Milestone 5): it has a verified evidence-support
+  // gate (app/agent/llm.py) that Standard RAG does not -- see
+  // WORKFLOW_HINTS.standard below. switchWorkflow(state.workflow) in
+  // init() applies this to the DOM, so this value is the only place the
+  // default lives, not also duplicated in index.html's static markup.
+  workflow: "agent",
   uploading: false,
   asking: false,
   lastResult: { demo: null, upload: null },
 };
 
 const WORKFLOW_HINTS = {
-  standard: "Retrieves once, then generates a grounded answer.",
-  agent: "Lets the model search/fetch sources itself, assess the evidence, and ask for clarification if your question is ambiguous.",
+  standard: "Retrieves once, then generates a grounded answer. Weaker grounding check than Agent: relies on the model saying \"I don't know\", with no verification that its answer is actually backed by the retrieved text.",
+  agent: "Lets the model search/fetch sources itself, assess the evidence, and ask for clarification if your question is ambiguous. Verifies its cited evidence is really in the retrieved text before answering (not a guarantee against misreading correctly-quoted text).",
 };
 
 const el = {
@@ -550,6 +555,7 @@ function buildExecutionDetails(data) {
 // ---------- init ----------
 
 (async function init() {
+  switchWorkflow(state.workflow);
   loadUploadChips();
   await loadDemoChips();
   switchMode("demo");

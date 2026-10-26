@@ -111,7 +111,23 @@ def ready():
         os.path.join(settings.index_dir, "faiss.index")
     ) and os.path.exists(settings.chunks_path)
     try:
-        resp = httpx.get(settings.ollama_base_url.replace("/v1", "") + "/api/tags", timeout=3.0)
+        # GET {base_url}/models is part of the OpenAI-compatible surface
+        # itself (not provider-specific), so this works unchanged whether
+        # ollama_base_url points at local Ollama or a hosted provider like
+        # Together.ai -- unlike the previous check, which called Ollama's
+        # own proprietary /api/tags and would always report "unreachable"
+        # against any other provider even while generation worked fine
+        # (found during Milestone 5 deployment prep: a real query
+        # succeeded while /ready still said generation_provider_reachable
+        # was false -- exactly the readiness-probe failure that would have
+        # kept Cloud Run from ever routing traffic to a healthy container).
+        # Free (no completion billed) and fast -- a real request, not an
+        # assumption that the endpoint exists.
+        resp = httpx.get(
+            settings.ollama_base_url.rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {settings.generation_api_key}"},
+            timeout=3.0,
+        )
         checks["generation_provider_reachable"] = resp.status_code == 200
     except Exception:
         checks["generation_provider_reachable"] = False
