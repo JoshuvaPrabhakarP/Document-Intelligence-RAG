@@ -849,3 +849,79 @@ def test_assess_evidence_quote_match_is_whitespace_and_case_insensitive_only():
         result = assess_evidence("How was the Sample Coffee Co. purchase paid for?", gathered_context)
 
     assert result["route"] == "answer"
+
+
+# ---------------------------------------------------------------------------
+# Multi-receipt comparisons/totals (Milestone 5 refinement): the clarify
+# rule must not force clarification just because a question spans more
+# than one receipt -- an EXPLICIT comparison/summary/total across
+# multiple receipts is a different situation from a question that's
+# ambiguous about WHICH SINGLE receipt it means, and must stay directly
+# answerable. The evidence-support gate's single supporting_quote field
+# was extended to accept several " | "-joined verbatim facts so a
+# multi-receipt answer can still be fact-checked per value, not weakened
+# to "at least one fact was real."
+# ---------------------------------------------------------------------------
+
+def test_quote_is_supported_checks_every_piece_of_a_multi_fact_quote():
+    from app.agent.llm import _quote_is_supported
+    context = "Example Grocers TOTAL 42.17\n\nMock Bookstore TOTAL 37.45"
+    assert _quote_is_supported("TOTAL 42.17 | TOTAL 37.45", context) is True
+    # One real, one fabricated -- must fail as a whole, not pass on the
+    # strength of the one real piece.
+    assert _quote_is_supported("TOTAL 42.17 | TOTAL 999.99", context) is False
+    assert _quote_is_supported("", context) is False
+    assert _quote_is_supported(" | ", context) is False
+
+
+def test_assess_evidence_answers_a_comparison_across_multiple_receipts():
+    """A question that explicitly wants more than one receipt together
+    (not a pick-one ambiguity) must be answered directly, citing both
+    passages, with a multi-fact quote that is fully verified."""
+    gathered_context = ("[passage_id=p1] (synthetic_demo)\nEXAMPLE GROCERS INC.\nTOTAL 42.17"
+                         "\n\n[passage_id=p2] (synthetic_demo)\nMOCK BOOKSTORE\nTOTAL 37.45")
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="Example Grocers Inc. has the higher total at $42.17, vs. Mock Bookstore's $37.45.",
+        cited_passage_ids=["p1", "p2"], supporting_quote="TOTAL 42.17 | TOTAL 37.45",
+    )
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence("Which receipt has the higher total, Example Grocers or Mock Bookstore?", gathered_context)
+
+    assert result["route"] == "answer"
+    assert result["cited_passage_ids"] == ["p1", "p2"]
+
+
+def test_assess_evidence_rejects_a_comparison_with_one_fabricated_fact():
+    """Same multi-receipt comparison, but one of the two cited facts is
+    not actually in the retrieved text -- must be downgraded, not pass
+    because the other fact was real."""
+    gathered_context = ("[passage_id=p1] (synthetic_demo)\nEXAMPLE GROCERS INC.\nTOTAL 42.17"
+                         "\n\n[passage_id=p2] (synthetic_demo)\nMOCK BOOKSTORE\nTOTAL 37.45")
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="Example Grocers Inc. has the higher total at $42.17, vs. Mock Bookstore's $99.99.",
+        cited_passage_ids=["p1", "p2"], supporting_quote="TOTAL 42.17 | TOTAL 99.99",
+    )
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence("Which receipt has the higher total, Example Grocers or Mock Bookstore?", gathered_context)
+
+    assert result["route"] == "insufficient_evidence"
+    assert result["answer"] is None
+
+
+def test_agent_prompt_tells_model_multi_receipt_questions_are_not_clarify():
+    """Prompt-content check (supplementary to the behavioral tests above,
+    not a substitute): the real prompt must distinguish an intentional
+    multi-receipt question from a pick-one ambiguity."""
+    gathered_context = ("[passage_id=p1] (synthetic_demo)\nEXAMPLE GROCERS INC.\nTOTAL 42.17"
+                         "\n\n[passage_id=p2] (synthetic_demo)\nMOCK BOOKSTORE\nTOTAL 37.45")
+    fake_client = _mock_assess_evidence_response(
+        route="answer", answer="x", cited_passage_ids=["p1", "p2"], supporting_quote="TOTAL 42.17 | TOTAL 37.45")
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        assess_evidence("Which receipt has the higher total, Example Grocers or Mock Bookstore?", gathered_context)
+
+    sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "it wants several or all of them together" in sent_prompt
+    assert "never \"clarify\", even though it spans more than one document" in sent_prompt

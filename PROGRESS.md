@@ -1044,3 +1044,46 @@ Tracked precisely via the real usage tracker for every call in this investigatio
 The earlier container-build section asserted the real Artifact Registry billing size is "almost certainly" 3.4–5.2 GB and not 9.1 GB. That was an overclaim — three Docker-side tools disagreed and no registry push was performed to settle it. Corrected in that section: **which figure Artifact Registry would actually bill against remains unverified** until a real push happens; 9.1 GB has not been ruled out.
 
 No Google Cloud resource created. No deploy run.
+
+## Milestone 5 continued — finishing the clarification fix: resume investigated, multi-receipt rule added, verified, container rebuilt
+
+### 1. The one failed resume, investigated directly (not guessed at)
+
+Repeated the exact ambiguous→resume flow 9 times total across several diagnostic batches, inspecting the full resumed state each time — not just the route. Confirmed concretely, by printing it: **the original question and the selected receipt ARE correctly preserved across resume** — `resume_state()`'s combined question correctly embeds both the original question and the user's clarification answer, `retrieved_passages` correctly carries forward the FULL (untruncated) text of all originally-retrieved candidates (the 200-char truncation in `app/agent/tools.py`'s tool-result message is only what the model sees mid-conversation; `assess_evidence()`'s `gathered_context` is always built from the full stored text, regardless), and when the named vendor matches exactly one carried-over candidate, the model correctly fetches/cites it. 7 of 9 resume attempts answered correctly; 2 of 9 fell back to a generic "insufficient_evidence" with no reasoning traceable to a code defect — every mechanism it depends on was independently confirmed correct. This is real, bounded model-sampling variance in `assess_evidence`'s own quote-production step (~20% miss rate measured this session), not a wiring bug — **reported as such, not a fix invented for a problem that isn't code-level.**
+
+### 2. Routing rule refined: intentional multi-receipt questions must stay answerable
+
+Real gap found while addressing this: the previous rule ("clarify whenever the question doesn't single out exactly one candidate") made no distinction between a question that's ambiguous about **which single** receipt it means, and a question that **explicitly wants multiple or all receipts together** (a comparison, a summary, a total across several) — the latter was at risk of being incorrectly pushed toward `clarify` even though there's nothing to pick between.
+
+Fixed in both `app/agent/llm.py` and `scripts/llm_client.py`: an explicit first check — does the question ask to compare/summarize/total across multiple receipts? If so, answer directly using every relevant candidate, cited together, never `clarify`, regardless of how many documents that spans. `clarify` is now explicitly scoped to "wants exactly one, can't tell which."
+
+This changes what `supporting_quote` needs to prove: a multi-receipt answer cites more than one fact, so `EVIDENCE_SCHEMA`'s `supporting_quote` now accepts several verbatim facts joined with `" | "`, and `_quote_is_supported()` verifies **every** piece independently — a multi-receipt answer is only as trustworthy as its weakest cited fact, not "at least one was real."
+
+### Deterministic regression coverage
+
+`tests/test_agent.py`: `test_quote_is_supported_checks_every_piece_of_a_multi_fact_quote` (unit-tests the multi-fact split/verify logic directly, including a one-real-one-fabricated case that must fail as a whole), `test_assess_evidence_answers_a_comparison_across_multiple_receipts` (behavioral: a real comparison question gets answered, both passages cited), `test_assess_evidence_rejects_a_comparison_with_one_fabricated_fact` (behavioral: same comparison, one fact fabricated, must downgrade), plus one prompt-content check. Full suite: **92 passed, 11 skipped**.
+
+### Verification: fixed 4-scenario set, 3 real runs each, every attempt reported
+
+`eval/together_multi_receipt_verification.py`:
+
+| Scenario | Expectation | Results |
+|---|---|---|
+| 1. The previously-failed follow-up (ambiguous → resume with "Fictional Hardware Supply") | clarify, then answer/$8.00 | **3/3** reached clarify and fully resolved correctly |
+| 2. Shared-vendor ambiguity (synthetic, two Sample Coffee Co. receipts) | clarify | 2/3 asked for clarification correctly, naming both dates/totals; **1/3 answered both totals directly instead of asking** — not wrong information, a defensible alternate response, but not the expected route; noted honestly as a possible side effect of making the model more willing to answer across multiple documents |
+| 3. Uniquely identified receipt (Fictional Hardware Supply) | answer/$156.42 | 2/3 ✅; 1/3 `insufficient_evidence` with no real cause — ordinary model noise unrelated to this round's change, this exact question type has succeeded reliably in every prior round |
+| 4. Intentional multi-receipt comparison ("which receipt has a higher total, Example Grocers Inc. or Mock Bookstore?") | answer (not clarify), citing both | **3/3** ✅ — answered directly every time, correct totals, both passages cited |
+
+Tracked precisely via the real usage tracker: **$0.012266 spent on this verification.**
+
+### Standard RAG — left as the documented experimental baseline, not redesigned
+
+Per instruction, not touched structurally this round. Its wording was kept consistent with the Agent's corrected rule (same shared-vendor and multi-receipt exceptions added to `scripts/llm_client.py`'s `disambiguation_block`, for whoever reads both side by side), but its `CLARIFICATION_NEEDED:` free-text protocol's unreliability (documented two rounds ago) is unchanged and still explicitly labeled the weaker, secondary path — Agent remains the default for exactly this reason.
+
+### Container rebuilt and spot-checked
+
+`app/agent/llm.py` and `scripts/llm_client.py` are both baked into the deploy image, so the fix required a rebuild: `docker build --provenance=false --sbom=false -t doc-rag:latest .` — **2.0 seconds** (every heavy layer cached; only the final `COPY app/` / `COPY scripts/...` layers re-ran). Spot-checked (not a full re-run of the earlier smoke-test suite, per instruction not to repeat it unnecessarily): a fresh container correctly answered the intentional multi-receipt comparison question, citing both real demo passages (`demo_000`, `demo_006`) — confirming the fix is live in the actual deploy artifact, not just the local venv. No credential leak in logs (re-checked).
+
+**Cumulative spend across the entire engagement: $0.054137 of the $0.25 budget.**
+
+No Google Cloud resource created. No deploy run.

@@ -1,0 +1,127 @@
+{
+  "provider": "https://api.together.ai/v1",
+  "model": "Qwen/Qwen3.5-9B",
+  "budget_usd": 0.25,
+  "prior_spend_usd": 0.041871,
+  "total_spent_usd": 0.054137,
+  "spent_this_run_usd": 0.012266,
+  "stopped_early_for_budget": false,
+  "results": {
+    "1-failed-followup-resume": {
+      "expectation": "expect clarify then answer/8.00",
+      "runs": [
+        {
+          "route": "answer",
+          "detail": "resumed answer='The tax on the Fictional Hardware Supply receipt is $8.00.'",
+          "error": null,
+          "model_call_count": 6,
+          "total_latency_ms": 11152.7,
+          "total_estimated_cost_usd": 0.001847
+        },
+        {
+          "route": "answer",
+          "detail": "resumed answer='The tax on the Fictional Hardware Supply receipt is $8.00.'",
+          "error": null,
+          "model_call_count": 6,
+          "total_latency_ms": 9179.4,
+          "total_estimated_cost_usd": 0.001816
+        },
+        {
+          "route": "answer",
+          "detail": "resumed answer='The tax on the FICTIONAL HARDWARE SUPPLY receipt is $8.00.'",
+          "error": null,
+          "model_call_count": 6,
+          "total_latency_ms": 9962.6,
+          "total_estimated_cost_usd": 0.001782
+        }
+      ]
+    },
+    "2-shared-vendor-ambiguity": {
+      "expectation": "expect clarify",
+      "runs": [
+        {
+          "route": "answer",
+          "detail": "clarification_question=None answer='The total at the Sample Coffee Co. receipt dated 01/02/2026 is $9.75, and the total at the Sample Coffee Co. receipt dated 03/09/2026 is $14.50.'",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 7075.5,
+          "total_estimated_cost_usd": 0.000627
+        },
+        {
+          "route": "clarify",
+          "detail": "clarification_question=\"SAMPLE COFFEE CO. appears in two distinct receipts (one dated 01/02/2026 with a total of 9.75, and another dated 03/09/2026 with a total of 14.50). Which specific receipt's total are you asking for?\" answer=None",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 5874.0,
+          "total_estimated_cost_usd": 0.000623
+        },
+        {
+          "route": "clarify",
+          "detail": "clarification_question=\"You asked for the total at Sample Coffee Co., but there are two different receipts from Sample Coffee Co. in the retrieved documents: one dated 01/02/2026 with a total of 9.75 and another dated 03/09/2026 with a total of 14.50. Which specific receipt's total did you want?\" answer=None",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 5985.0,
+          "total_estimated_cost_usd": 0.000651
+        }
+      ]
+    },
+    "3-uniquely-identified-receipt": {
+      "expectation": "expect answer/156.42",
+      "runs": [
+        {
+          "route": "answer",
+          "detail": "answer='The total at Fictional Hardware Supply is $156.42.'",
+          "error": null,
+          "model_call_count": 4,
+          "total_latency_ms": 6286.7,
+          "total_estimated_cost_usd": 0.000994
+        },
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer=\"I don't have enough information in the available documents to answer that.\"",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 9168.4,
+          "total_estimated_cost_usd": 0.000781
+        },
+        {
+          "route": "answer",
+          "detail": "answer='The total at Fictional Hardware Supply is $156.42.'",
+          "error": null,
+          "model_call_count": 4,
+          "total_latency_ms": 6547.9,
+          "total_estimated_cost_usd": 0.000784
+        }
+      ]
+    },
+    "4-intentional-multi-receipt": {
+      "expectation": "expect answer (NOT clarify), citing both",
+      "runs": [
+        {
+          "route": "answer",
+          "detail": "answer='The Example Grocers Inc. receipt has a higher total ($42.17) compared to the Mock Bookstore receipt ($37.45).' cited=['c105b8ee91', '253aa74ef8']",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 6708.7,
+          "total_estimated_cost_usd": 0.000706
+        },
+        {
+          "route": "answer",
+          "detail": "answer=\"Example Grocers Inc. has a higher total ($42.17) compared to Mock Bookstore's total ($37.45).\" cited=['7a5b7f89a2', '42e7c66bdc']",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 5595.7,
+          "total_estimated_cost_usd": 0.000967
+        },
+        {
+          "route": "answer",
+          "detail": "answer='Example Grocers Inc. has a higher total ($42.17) than Mock Bookstore ($37.45).' cited=['417bcab639', 'b98c48c65c']",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 4628.6,
+          "total_estimated_cost_usd": 0.000685
+        }
+      ]
+    }
+  }
+}

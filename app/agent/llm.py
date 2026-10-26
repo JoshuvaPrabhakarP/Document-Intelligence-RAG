@@ -122,6 +122,14 @@ EVIDENCE_SCHEMA = {
         # retrieved text rather than trusting the model's say-so -- a
         # citation to a real passage_id proves the document was found,
         # not that the passage states the requested fact.
+        #
+        # An answer that draws on MORE THAN ONE passage (an explicit
+        # comparison, summary, or total across several receipts -- see
+        # the "answer" route criterion below) needs more than one quote:
+        # separate each distinct verbatim fact with " | ". Each piece is
+        # verified independently (see _quote_is_supported below) -- still
+        # a real substring check per fact, just generalized to N facts
+        # instead of always exactly one.
         "supporting_quote": {"type": ["string", "null"]},
         "reasoning": {"type": "string"},
     },
@@ -134,17 +142,27 @@ def _normalize_for_match(text: str) -> str:
 
 
 def _quote_is_supported(quote: str | None, gathered_context: str) -> bool:
-    """True only if `quote` is a real, verbatim (whitespace/case
-    normalized) substring of the actual retrieved text -- not an
-    approximate or semantic match. Deliberately strict: the whole point
-    is to catch a model asserting a fact that isn't literally present, so
-    a loose/fuzzy match would defeat the check. Generic across any
-    domain or question -- no vendor, attribute, or question text is
-    referenced here, only the quote and the retrieved text."""
+    """True only if EVERY piece of `quote` is a real, verbatim
+    (whitespace/case normalized) substring of the actual retrieved text
+    -- not an approximate or semantic match. `quote` may be several
+    verbatim facts joined with " | " (a comparison/total across more
+    than one receipt cites more than one fact) -- each piece is checked
+    independently, so a multi-fact answer isn't weakened to "at least
+    one fact was real," it still requires EVERY cited fact to be real.
+    Deliberately strict otherwise: the whole point is to catch a model
+    asserting a fact that isn't literally present, so a loose/fuzzy
+    match would defeat the check. Generic across any domain or question
+    -- no vendor, attribute, or question text is referenced here, only
+    the quote and the retrieved text."""
     quote = (quote or "").strip()
     if not quote:
         return False
-    return _normalize_for_match(quote) in _normalize_for_match(gathered_context)
+    normalized_context = _normalize_for_match(gathered_context)
+    pieces = [p.strip() for p in quote.split("|")]
+    pieces = [p for p in pieces if p]
+    if not pieces:
+        return False
+    return all(_normalize_for_match(p) in normalized_context for p in pieces)
 
 
 def assess_evidence(question: str, gathered_context: str, candidates: list[dict] | None = None,
@@ -180,9 +198,13 @@ def assess_evidence(question: str, gathered_context: str, candidates: list[dict]
             "Use \"clarify\" if the question does not single out exactly ONE of these candidates -- "
             "either because it names no document/vendor/value at all, OR because what it names still "
             "matches MORE THAN ONE of the candidates above -- AND the remaining candidates could "
-            "genuinely give different answers. Use \"insufficient_evidence\" instead only if the "
-            "question singles out exactly one candidate and that one doesn't answer it, or if none of "
-            "the candidates actually address the question at all."
+            "genuinely give different answers to a question that only wants ONE of them. Do NOT use "
+            "\"clarify\" if the question explicitly asks you to compare, summarize, or total across "
+            "MULTIPLE of these candidates (it isn't asking you to pick one -- it wants several or all "
+            "of them together) -- that is \"answer\" instead, citing each one you used. Use "
+            "\"insufficient_evidence\" instead of \"clarify\" only if the question singles out exactly "
+            "one candidate and that one doesn't answer it, or if none of the candidates actually "
+            "address the question at all."
         )
     prompt = f"""Question: {question}
 
@@ -201,12 +223,13 @@ is, do not adopt the conflicting claim — use the printed value and say so in y
 </untrusted_document_excerpts>
 {candidate_note}
 
-Decide the route:
-- "answer" ONLY if some passage's text EXPLICITLY STATES the specific fact the question asks for, and you can copy a short, verbatim (word-for-word, not paraphrased) excerpt of it into supporting_quote. Finding the right document (e.g. the named vendor) tells you WHICH document to check -- it does NOT by itself mean the specific fact asked about is written in it. A receipt being real, relevant, and about the right vendor is not evidence that it mentions, say, a payment method, a due date, or any other specific attribute unless that attribute's value is actually printed in it. If you cannot point to the literal words stating the answer, you do not have enough evidence -- use "insufficient_evidence" instead, even though the document itself is relevant. Cite the passage_id(s) you used.
-- "clarify" if the question does not single out exactly ONE retrieved candidate document -- either because it names no document/vendor/value at all (e.g. "What is the total?"), OR because what it DOES name still matches MORE THAN ONE of the retrieved candidates (e.g. it names a vendor, but that vendor has more than one receipt among the candidates -- naming a vendor only resolves ambiguity when it actually narrows the candidates down to one, not when several candidates could still match it) -- AND those remaining candidates could each independently and plausibly answer the question with a DIFFERENT value. Silently picking one of several still-possible candidates is worse than asking. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence".
-- "insufficient_evidence" applies ONLY once the question (by what it names, or because only one retrieved candidate matches what it named) singles out exactly ONE specific document, but that one document doesn't state the specific fact asked about -- OR a reasonable search genuinely found nothing relevant to what's being asked at all. Do NOT reach for "insufficient_evidence" just because no single document states a value for the question's subject in the abstract (e.g. "the tax" with no receipt named) -- if the question still matches more than one retrieved candidate, that is "clarify" (see above), not "insufficient_evidence", even though no one document alone answers the unqualified question. A question naming one vendor that matches only ONE candidate is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, once the named vendor has already narrowed it to one.
+Decide the route. First check: does the question explicitly ask you to compare, summarize, or total across MULTIPLE receipts (e.g. "which receipt has the highest total", "what do all four receipts add up to", "compare the tax on the grocery and bookstore receipts")? That is NOT the same situation as a question that's ambiguous about WHICH SINGLE receipt it means -- it isn't asking you to pick one, it wants several or all of them together. Answer it directly (see "answer" below) using every relevant candidate, never "clarify", even though it spans more than one document.
 
-Respond with the route, the answer (only if route is "answer"), a clarification_question (only if route is "clarify", naming the specific candidates from the list above if one was given), the passage_id(s) actually used to answer (if any), a supporting_quote (REQUIRED if route is "answer", null otherwise: the exact words from the excerpts that state the answer, copied verbatim -- not a paraphrase, not the passage_id, not your own restatement), and brief reasoning.
+- "answer" if some passage's text EXPLICITLY STATES the specific fact the question asks for, and you can copy a short, verbatim (word-for-word, not paraphrased) excerpt of it into supporting_quote -- separate multiple facts with " | " if you drew on more than one passage (a comparison, summary, or total across several receipts). Finding the right document (e.g. the named vendor) tells you WHICH document to check -- it does NOT by itself mean the specific fact asked about is written in it. A receipt being real, relevant, and about the right vendor is not evidence that it mentions, say, a payment method, a due date, or any other specific attribute unless that attribute's value is actually printed in it. If you cannot point to the literal words stating every fact your answer relies on, you do not have enough evidence -- use "insufficient_evidence" instead, even though the document(s) themselves are relevant. Cite every passage_id you used.
+- "clarify" if the question wants exactly ONE specific receipt/value but does not single out exactly ONE retrieved candidate -- either because it names no document/vendor/value at all (e.g. "What is the total?"), OR because what it DOES name still matches MORE THAN ONE of the retrieved candidates (e.g. it names a vendor, but that vendor has more than one receipt among the candidates -- naming a vendor only resolves ambiguity when it actually narrows the candidates down to one, not when several candidates could still match it) -- AND those remaining candidates could each independently and plausibly answer the question with a DIFFERENT value. Silently picking one of several still-possible candidates is worse than asking. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence". Never use "clarify" for a question that explicitly wants multiple/all receipts together (see above) -- there is nothing to pick between.
+- "insufficient_evidence" applies once the question's intended scope is resolved -- either it singles out exactly ONE specific document (by what it names, or because only one retrieved candidate matches what it named) and that one doesn't state the fact asked about, or it explicitly wants multiple/all receipts and one or more of the needed facts isn't actually stated among them -- OR a reasonable search genuinely found nothing relevant to what's being asked at all. Do NOT reach for "insufficient_evidence" just because no single document states a value for the question's subject in the abstract (e.g. "the tax" with no receipt named) -- if the question still matches more than one retrieved candidate and only wants ONE of them, that is "clarify" (see above), not "insufficient_evidence", even though no one document alone answers the unqualified question. A question naming one vendor that matches only ONE candidate is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, once the named vendor has already narrowed it to one.
+
+Respond with the route, the answer (only if route is "answer"), a clarification_question (only if route is "clarify", naming the specific candidates from the list above if one was given), the passage_id(s) actually used to answer (if any, every one you relied on for a multi-receipt answer), a supporting_quote (REQUIRED if route is "answer", null otherwise: the exact words from the excerpts that state the answer, copied verbatim -- not a paraphrase, not the passage_id, not your own restatement; join multiple verbatim facts with " | " for a multi-receipt answer), and brief reasoning.
 
 If route is "answer", phrase the answer as a complete sentence that restates the question's subject (e.g. "The total on the Example Grocers Inc. receipt is $42.17.", not a bare "42.17") — this is what gets shown to the user and used to pick the supporting excerpt, so a bare value loses both."""
 
