@@ -962,3 +962,46 @@ Stated explicitly, since it's a real, non-obvious distinction: `min-instances=1`
 Given in full in the chat response for this turn (account/project setup, API enablement, Artifact Registry, Secret Manager, build, and `gcloud run deploy` with the locked-in flags above, plus the budget-alerts-vs-spending-limits explanation) — not duplicated here to avoid the two drifting out of sync; this file records that it was given and the key numbers, not the copy-paste commands themselves.
 
 No billable resource created. No deploy run. Proceeding past this plan — including the Docker build itself — requires the user's explicit go-ahead.
+
+## Milestone 5 continued — real Docker build + container smoke tests (actually run, not just planned)
+
+Docker access was intermittently broken in this sandboxed session (two separate permission-denied episodes, one specific to the harness's explicit-background execution path, one a genuine session-wide lapse later resolved by restarting WSL and the user being added to the `docker` group) — resolved by the user's own restart, verified directly (`docker info` returned full client+server info) before proceeding, per instruction never to touch socket permissions myself.
+
+### Build
+
+`docker build -t doc-rag:latest .` succeeded. Total build time ≈ **17.4 minutes**, dominated by: the baked-in model-weight download/cache step (**650.3 s**, ~10.8 min — downloading `bge-large-en-v1.5` + `bge-reranker-large` from Hugging Face Hub at build time, not deferred to the first request anymore) and image export/unpack (**169.5 s**). `requirements-deploy.txt` install: 133.0 s. CPU-only PyTorch install: 80.3 s. apt (tesseract): 12.5 s.
+
+**Image size — reported honestly with the discrepancy, not papered over**: three different Docker-side views gave three different numbers: `docker images`/`docker system df -v` SIZE/DISK USAGE = **9.1 GB**; the same command's newer CONTENT SIZE column = **3.44 GB**; `du -sh /` measured *inside the running container* = **5.2 GB** (1.9 GB `/usr` for Python + packages, 3.4 GB `/opt` for the baked-in model cache, negligible elsewhere). These don't reconcile cleanly from the tools available in this session — most likely explained by how much of the `python:3.12-slim` base image's own layers get counted as "this image's" size vs. shared/base content, not a sign the build did something wrong (the live, in-container filesystem view and the real package/model sizes add up consistently with the 3.4–5.2 GB range). For Artifact Registry storage billing, the real pushed/stored size is almost certainly in that 3.4–5.2 GB range, not 9.1 GB — worth re-confirming with an actual `docker push` to a real registry before trusting either number as the final billing basis.
+
+### Container smoke tests (real Together calls, real tesseract OCR, no mocks)
+
+| Check | Result |
+|---|---|
+| `/health` | ✅ responds in ~1.7 s from `docker run` |
+| `/ready` (the fix from two rounds ago) | ✅ `true` in the real container too — generic `/models` check works |
+| Agent: correct total + real citation reaching the API response | ✅ `$42.17`, 1 source cited |
+| Agent: fallback (insufficient evidence), confirming the `cited_passage_ids` leak fix | ✅ `insufficient_evidence`, `sources: []` — no stray citation, matching last round's fix |
+| Agent: clarification follow-up | ❌ **not reproduced** — see below |
+| Synthetic upload + real OCR (a rendered PNG, not a real document) | ✅ tesseract correctly read vendor name, date, "Payment Method: Debit Card", and "TOTAL 63.21" from the image |
+| Upload-mode query, Standard RAG, against the OCR'd text | ✅ answered "Debit Card", `has_sufficient_evidence: true` — genuinely supported (the OCR'd text literally states it) |
+| Upload-mode query, Agent workflow, same document | ✅ answered the total correctly |
+| No credential leak | ✅ confirmed: `docker logs` shows only request URLs (httpx's default logging), never a header value; `docker inspect .Config.Env` has no secret; no `.env`/credential file found anywhere in the image |
+| Model weights load offline | ✅ confirmed two ways: (1) `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` were active for every query above and every one succeeded — if the cache had been incomplete this would have failed immediately, not silently downloaded; (2) `docker logs` shows no download or Hub-reachability log line at all |
+
+**Clarification follow-up finding, reported plainly rather than smoothed over**: ran the exact same question ("What is the tax?", agent workflow) **four times** in this session, expecting the `clarify` route this project has demonstrated working in two earlier rounds (the original 10-question compat test, and the dedicated routing-fix verification). Results this round: `insufficient_evidence`, `insufficient_evidence`, an unclear non-clarify outcome, `insufficient_evidence` again — **zero clean `clarify` results in four real attempts**, where earlier rounds got it right. One attempt's reasoning explicitly said *"The question 'What is the tax?' lacks context (no specific store or receipt named). While documents for Example Grocers,..."* — correctly recognizing the ambiguity in its own stated reasoning — and still chose `insufficient_evidence` over `clarify`. This is plain, real-model sampling variance (same non-zero-temperature, single-sample-is-not-proof caveat this project has stated from the start), not a code regression — nothing about the `/ready`, citation, or OCR paths was touched since the last round's successful clarify demonstrations. Still, four misses in a row is a genuinely higher miss rate than anything measured so far for this specific scenario, and is flagged here as worth a dedicated repeated-sampling study (the same kind `eval/injection_variability.py` already did for the injection-resistance question) if this matters for a real deployment decision — **not investigated further or fixed in this round**, since this round's scope was build-and-verify, not re-tune routing prompts again.
+
+### Peak memory (containerized, `docker stats` cgroup accounting — a different methodology than the earlier uncontainerized `ps`-based RSS measurement, noted plainly)
+
+| Point | Memory |
+|---|---|
+| Container idle, before any query | 156 MB |
+| After one cold Standard RAG query (baked-in weights, no download) | 878 MB |
+| After the full smoke test (both workflows, demo + upload mode, all lazy singletons warm) | ~1.25 GB |
+
+**Lower than the ~2.6 GB measured two rounds ago** (uncontainerized, `ps -o rss` summed) — most likely because `docker stats` reports cgroup "used memory" (which can exclude some reclaimable page-cache-backed model-weight mappings that raw RSS counts), not because less is actually loaded; the same resource-duplication finding (agent's tool layer and the pipeline's own retriever/reranker are separate instances) still applies, visible in the jump from 878 MB to 1.25 GB as more code paths got exercised. Cloud Run's own billing/limits use cgroup-style accounting, so **1.25 GB is likely closer to what Cloud Run would actually report** than the earlier raw-RSS figure — but keeping the previously-recommended 4 GiB/2 vCPU sizing as the safe starting point is still the right call until this is confirmed under real concurrent load, not single-request measurements.
+
+**Cold-start improvement from baking in the weights**: first query dropped from **25.5 s** (uncontainerized, weights downloaded from HF Hub on first use) to **12.2 s** (containerized, weights pre-baked) — roughly 2x faster, and no longer dependent on Hugging Face Hub's availability/bandwidth at request time.
+
+Estimated API spend this round (container calls aren't wrapped by the Python usage tracker used in earlier rounds, so this is an estimate from this session's own already-measured per-flow averages, not a fresh assumption): **~$0.0047**. **Cumulative estimated spend across the whole engagement: ~$0.0167 of the $0.25 budget.**
+
+No Google Cloud resource created. No deploy run. The built image (`doc-rag:latest`, local only, never pushed anywhere) is left on disk for the next step.
