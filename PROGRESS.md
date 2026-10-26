@@ -1087,3 +1087,64 @@ Per instruction, not touched structurally this round. Its wording was kept consi
 **Cumulative spend across the entire engagement: $0.054137 of the $0.25 budget.**
 
 No Google Cloud resource created. No deploy run.
+
+## Milestone 5 — final deployment handoff
+
+Everything below is either directly measured this engagement or explicitly labeled as an estimate/unverified. Full detail for each line lives in the Milestone 5 sections above — this is the consolidated reference for actually deploying.
+
+**Config locked in**: `--min-instances=0`, `--max-instances=1` (architecturally required, not a preference — in-memory session/rate-limit state), one uvicorn worker (unchanged, already the Dockerfile's `CMD`). Agent workflow is the default.
+
+**Measured**: cold container start → `/health` ~1.7s; `/ready` (generic `/models` check, works for Together) ~2.0s total; first query with baked-in model weights ~12.2s (down from 25.5s before weights were baked in); peak memory ~1.25GB (`docker stats`, cgroup accounting) across both workflows — a separate uncontainerized measurement via raw RSS showed up to ~2.6GB; the gap is a measurement-methodology difference, not a sign less is really loaded. First build ~17.4 min (dominated by the one-time model-weight download); a code-only rebuild is ~2 seconds (layers cached).
+
+**Known limitations, stated plainly**:
+1. Upload/clarification session state is in-process memory — lost on restart, redeploy, or scale-down, and a warm instance does *not* guarantee it survives (Cloud Run can still recycle a warm instance). No durable store exists; this is disclosed in the upload UI itself.
+2. The Agent's tool layer and Standard RAG's pipeline each load their own separate embedding/reranker model copies — peak RAM reflects both being warm, not either alone.
+3. Standard RAG's `CLARIFICATION_NEEDED:` free-text protocol remains unreliable (0/3 in this engagement's testing) even after this round's logic fix — a structural limitation of prefix-matched free text, not something a wording change reaches. Standard RAG is kept as the documented experimental baseline per instruction, not redesigned; Agent is the default specifically because its structured route field doesn't share this failure mode.
+4. The Agent's own clarify/resume path is good but not perfect — this engagement's repeated-sampling checks measured real miss rates in the 0–33% range depending on the specific scenario (always reported, never smoothed over). Treat as expected real-model variance, not a bug to chase to zero.
+5. The evidence-support gate (`supporting_quote`, including its multi-fact `" | "` form) verifies that cited facts are literally present in the retrieved text — it does not verify semantic correctness, that the conclusion drawn from those facts is right, or immunity to hallucination generally.
+6. Image storage billing basis is unverified — `docker images`/`du`/content-size reporting disagree (9.1GB / 5.2GB / 3.44GB); no registry push has been done to settle which one Artifact Registry would actually bill.
+7. Relevant document text (demo or uploaded) is sent to Together.ai's API to generate answers in both workflows — disclosed in the upload UI.
+
+**Expected monthly cost** (GCP infrastructure; Together's own API cost is separate, already estimated at ~$0.07–0.35/month for 200–1,000 queries in an earlier section):
+
+| Item | Estimate | Confidence |
+|---|---|---|
+| Compute (min-instances=0, demo-scale traffic) | ~$0/month (inside Cloud Run's free tier) | Based on this project's own measured per-query time; re-verify under real traffic |
+| Image storage (Artifact Registry) | ~$0.40–0.90/month depending on which image-size figure is real | **Unverified** — needs a real push |
+| Builds | negligible at a few deploys/month | Free daily allowance not independently confirmed against Google's current page |
+| Secrets (Together API key) | ~$0/month | Comfortably inside Secret Manager's free tier |
+| **Total GCP infra estimate** | **~$0.50–1.00/month** | Dominated by image storage, not compute, at this traffic scale |
+
+**Exact GCP setup steps** (prepared, not run — same commands given earlier in this engagement, reproduced here as the canonical copy, with the locked-in Cloud Run flags):
+
+```bash
+gcloud auth login
+gcloud projects create doc-rag-prod --name="Document Intelligence RAG"
+gcloud config set project doc-rag-prod
+gcloud billing accounts list
+gcloud billing projects link doc-rag-prod --billing-account=<BILLING_ACCOUNT_ID>
+gcloud billing budgets create --billing-account=<BILLING_ACCOUNT_ID> \
+  --display-name="doc-rag monthly budget" --budget-amount=10USD \
+  --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+  secretmanager.googleapis.com cloudbuild.googleapis.com
+gcloud artifacts repositories create doc-rag-repo \
+  --repository-format=docker --location=us-central1
+printf '%s' "$TOGETHER_API_KEY" | gcloud secrets create GENERATION_API_KEY --data-file=-
+gcloud projects add-iam-policy-binding doc-rag-prod \
+  --member="serviceAccount:$(gcloud projects describe doc-rag-prod --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+gcloud builds submit --tag us-central1-docker.pkg.dev/doc-rag-prod/doc-rag-repo/doc-rag:latest
+gcloud run deploy doc-rag \
+  --image=us-central1-docker.pkg.dev/doc-rag-prod/doc-rag-repo/doc-rag:latest \
+  --region=us-central1 --platform=managed \
+  --memory=4Gi --cpu=2 --concurrency=4 \
+  --min-instances=0 --max-instances=1 --timeout=300 \
+  --set-env-vars=OLLAMA_BASE_URL=https://api.together.ai/v1,OLLAMA_MODEL=Qwen/Qwen3.5-9B \
+  --set-secrets=GENERATION_API_KEY=GENERATION_API_KEY:latest \
+  --allow-unauthenticated
+```
+
+**Budget alerts vs. spending limits**: GCP budget alerts are notification-only — they do not stop billing or throttle resources, can lag behind real charges, and fire at configurable thresholds (50/90/100% by default). There is no built-in hard spending cap for Cloud Run; the real ceiling here is architectural (`max-instances=1` + fixed 4GiB/2vCPU bounds compute regardless of traffic). Set the alert for visibility, not as a safety net.
+
+No Google Cloud resource has been created. No deploy has been run.
