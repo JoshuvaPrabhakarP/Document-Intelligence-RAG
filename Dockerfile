@@ -20,7 +20,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tesseract-ocr-osd \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# Hugging Face Spaces runs Docker containers as UID 1000, not root --
+# creating this user explicitly (rather than relying on an implicit
+# root process) keeps this one image working unmodified on both
+# deployment targets: non-root execution is a strict improvement for
+# Cloud Run too, not a platform-specific requirement that would break
+# it there. Switching to this user before the pip installs matches
+# Hugging Face's own documented Docker Space pattern.
+RUN useradd -m -u 1000 user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+USER user
+WORKDIR $HOME/app
 
 # CPU-only PyTorch from PyTorch's own wheel index -- a separate step from
 # requirements-deploy.txt on purpose, see that file's header comment.
@@ -28,7 +39,7 @@ RUN pip install --no-cache-dir \
       torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 \
       --index-url https://download.pytorch.org/whl/cpu
 
-COPY requirements-deploy.txt .
+COPY --chown=user requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
 # Bake the embedding (bge-large-en-v1.5, ~1.3GB) and reranker
@@ -38,10 +49,11 @@ RUN pip install --no-cache-dir -r requirements-deploy.txt
 # first request downloading ~3.5GB over the network before it can
 # answer anything is a real reliability risk -- a slow/flaky network
 # path, or a request timeout, on literally the first request a cold
-# (min-instances=0) container ever serves. HF_HOME is set explicitly
+# (min-instances=0) container ever serves. HF_HOME is set explicitly,
+# under the non-root user's own home directory (already owned by it),
 # so the build-time download and the runtime load both resolve to the
-# exact same path regardless of $HOME.
-ENV HF_HOME=/opt/hf_cache
+# exact same, writable path.
+ENV HF_HOME=$HOME/hf_cache
 RUN python -c "\
 from sentence_transformers import SentenceTransformer; \
 from transformers import AutoTokenizer, AutoModelForSequenceClassification; \
@@ -62,11 +74,17 @@ ENV HF_HUB_OFFLINE=1 \
 # builder, metadata filtering) -- NOT the full scripts/ directory, which
 # also holds research-only tooling (eval harnesses, corpus-building
 # scripts, ir_datasets loaders) that has no place in a public image.
-COPY app/ app/
-COPY scripts/fusion.py scripts/bm25_retrieve.py scripts/dense_retrieve.py \
+# --chown=user: COPY always defaults to root ownership regardless of
+# the active USER, so this is required, not redundant -- without it,
+# demo_data/index/ would be unwritable by the running process, and the
+# BM25 index rebuild it does on first use (its cache compares mtimes;
+# a fresh COPY layer can make an already-valid cache look stale) would
+# fail with a permission error instead of silently regenerating it.
+COPY --chown=user app/ app/
+COPY --chown=user scripts/fusion.py scripts/bm25_retrieve.py scripts/dense_retrieve.py \
      scripts/rerank.py scripts/metadata_filter.py scripts/llm_client.py \
      scripts/
-COPY demo_data/ demo_data/
+COPY --chown=user demo_data/ demo_data/
 
 # Demo config is the only one ever served publicly -- the private research
 # corpus (data/) is never copied into this image in the first place, so
@@ -79,8 +97,12 @@ ENV APP_CONFIG=demo \
 # Uploads/session data live outside the image by design (app/config.py's
 # upload_dir) -- a real deployment should point this at the platform's
 # ephemeral/tmp storage or a mounted volume, never at a path that would
-# get baked into a new image layer or persist across deploys.
-VOLUME ["/tmp/doc-rag-uploads"]
+# get baked into a new image layer or persist across deploys. No VOLUME
+# directive here: Docker creates a VOLUME's mount point as root before
+# the container's own process starts, which the non-root user can't
+# write into (confirmed directly -- this broke every query until
+# removed). The app creates this directory itself at runtime, under the
+# already-writable /tmp, so nothing here needs to pre-create it.
 
 EXPOSE 8000
 
