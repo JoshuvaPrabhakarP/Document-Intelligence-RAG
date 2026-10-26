@@ -1,0 +1,156 @@
+{
+  "provider": "https://api.together.ai/v1",
+  "model": "Qwen/Qwen3.5-9B",
+  "budget_usd": 0.25,
+  "prior_spend_usd": 0.0167,
+  "total_spent_usd": 0.0284,
+  "spent_this_run_usd": 0.0117,
+  "stopped_early_for_budget": false,
+  "results": {
+    "A-ambiguous-no-document": {
+      "expectation": "expect clarify",
+      "runs": [
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer=\"I don't know.\" clarification_question=None",
+          "error": null,
+          "model_call_count": 1,
+          "total_latency_ms": null,
+          "total_estimated_cost_usd": 0.000158
+        },
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer lists all 5 vendors' totals but still says I don't know, clarification_question=None",
+          "error": null,
+          "model_call_count": 1,
+          "total_latency_ms": null,
+          "total_estimated_cost_usd": 0.000179
+        },
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer=\"I don't know\" clarification_question=None",
+          "error": null,
+          "model_call_count": 1,
+          "total_latency_ms": null,
+          "total_estimated_cost_usd": 0.000158
+        }
+      ]
+    },
+    "B-explicit-unique-receipt": {
+      "expectation": "expect answer/156.42",
+      "runs": [
+        {
+          "route": "answer",
+          "detail": "answer='The total at Fictional Hardware Supply is 156.42.'",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": null,
+          "total_estimated_cost_usd": 0.000725
+        },
+        {
+          "route": "answer",
+          "detail": "answer='The total at Fictional Hardware Supply is $156.42.'",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": null,
+          "total_estimated_cost_usd": 0.000744
+        },
+        {
+          "route": "answer",
+          "detail": "answer='The total at Fictional Hardware Supply is $156.42.'",
+          "error": null,
+          "model_call_count": 4,
+          "total_latency_ms": 3839.0,
+          "total_estimated_cost_usd": 0.000928
+        }
+      ]
+    },
+    "C-missing-info-named-document": {
+      "expectation": "",
+      "runs": [
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer=\"I don't have enough information in the available documents to answer that.\"",
+          "error": null,
+          "model_call_count": 4,
+          "total_latency_ms": 4142.7,
+          "total_estimated_cost_usd": 0.000699
+        },
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer=\"I don't have enough information in the available documents to answer that.\"",
+          "error": null,
+          "model_call_count": 4,
+          "total_latency_ms": 5357.6,
+          "total_estimated_cost_usd": 0.000705
+        },
+        {
+          "route": "insufficient_evidence",
+          "detail": "answer=\"I don't have enough information in the available documents to answer that.\"",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 3962.8999999999996,
+          "total_estimated_cost_usd": 0.000541
+        }
+      ]
+    },
+    "D-clarify-followup-roundtrip": {
+      "expectation": "",
+      "runs": [
+        {
+          "route": "answer",
+          "detail": "resumed answer='The tax on the Fictional Hardware Supply receipt is $8.00.'",
+          "error": null,
+          "model_call_count": 6,
+          "total_latency_ms": 9374.2,
+          "total_estimated_cost_usd": 0.001667
+        },
+        {
+          "route": "insufficient_evidence",
+          "detail": "resumed answer=\"I don't have enough information in the available documents to answer that.\"",
+          "error": null,
+          "model_call_count": 6,
+          "total_latency_ms": 11136.2,
+          "total_estimated_cost_usd": 0.001788
+        },
+        {
+          "route": "answer",
+          "detail": "resumed answer='The tax on the Fictional Hardware Supply receipt is $8.00.'",
+          "error": null,
+          "model_call_count": 6,
+          "total_latency_ms": 10441.4,
+          "total_estimated_cost_usd": 0.001703
+        }
+      ]
+    },
+    "E-shared-vendor-synthetic": {
+      "expectation": "",
+      "runs": [
+        {
+          "route": "clarify",
+          "detail": "clarification_question='What is the total on the Sample Coffee Co. receipt dated 01/02/2026 or 03/09/2026?' answer=None",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 4782.4,
+          "total_estimated_cost_usd": 0.00057
+        },
+        {
+          "route": "clarify",
+          "detail": "clarification_question='The search results show two different receipts for Sample Coffee Co. with dates 01/02/2026 (Total $9.75) and 03/09/2026 (Total $14.50). Which specific date or receipt would you like me to reference to find the total?' answer=None",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 4487.6,
+          "total_estimated_cost_usd": 0.000569
+        },
+        {
+          "route": "clarify",
+          "detail": "clarification_question='Which specific receipt from Sample Coffee Co. are you referring to? Retrieved documents show a total of $9.75 on the 01/02/2026 receipt and $14.50 on the 03/09/2026 receipt.' answer=None",
+          "error": null,
+          "model_call_count": 3,
+          "total_latency_ms": 5039.9,
+          "total_estimated_cost_usd": 0.000564
+        }
+      ]
+    }
+  }
+}

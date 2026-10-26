@@ -328,7 +328,25 @@ def test_standard_prompt_distinguishes_identically_sourced_candidates():
     assert "DEMO PIZZA KITCHEN" in prompt
     assert "MOCK BOOKSTORE" in prompt
     assert prompt.count("synthetic_demo") == 0  # the useless identical label must not leak into the prompt
-    assert "already names a specific vendor or document" in prompt
+    assert "single out exactly ONE" in prompt
+
+
+def test_standard_prompt_does_not_treat_a_shared_vendor_name_as_uniquely_identifying():
+    """Milestone 5 regression: a vendor name does NOT by itself single out
+    one document when more than one retrieved candidate shares that same
+    vendor (e.g. two Sample Coffee Co. receipts on different dates) --
+    the prompt must say so explicitly, not just "if the question names a
+    vendor, stop asking" (the wording this replaced, which incorrectly
+    suppressed clarification in exactly this case)."""
+    candidates_raw = [
+        {"chunk_id": "demo_010", "source": "synthetic_demo", "text": "SAMPLE COFFEE CO.\nDate: 01/02/2026\nTOTAL 9.75"},
+        {"chunk_id": "demo_011", "source": "synthetic_demo", "text": "SAMPLE COFFEE CO.\nDate: 03/09/2026\nTOTAL 14.50"},
+    ]
+    prompt_candidates = format_candidates(candidates_raw)
+    prompt = build_prompt("What is the total at Sample Coffee Co.?", context_chunks=candidates_raw, candidates=prompt_candidates)
+
+    assert "does NOT by itself single out which one is meant" in prompt
+    assert "MORE THAN ONE of the documents listed" in prompt
 
 
 def test_agent_prompt_tells_model_named_vendor_overrides_candidate_noise():
@@ -361,7 +379,7 @@ def test_agent_prompt_tells_model_named_vendor_overrides_candidate_noise():
         )
 
     sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-    assert "already names a specific vendor or document" in sent_prompt
+    assert "single out exactly ONE" in sent_prompt
     assert "SAMPLE COFFEE CO." in sent_prompt
     assert "DEMO PIZZA KITCHEN" in sent_prompt
     # The candidate_note's choice list (not gathered_context, which
@@ -369,3 +387,40 @@ def test_agent_prompt_tells_model_named_vendor_overrides_candidate_noise():
     # not list the same useless label twice.
     assert "- synthetic_demo" not in sent_prompt
     assert result["route"] == "insufficient_evidence"
+
+
+def test_agent_prompt_does_not_treat_a_shared_vendor_name_as_uniquely_identifying():
+    """Milestone 5 regression, agent side: the four real clarification
+    failures investigated this round showed the model choosing
+    "insufficient_evidence" over "clarify" for a document-selection
+    question -- traced to the route criteria text not clearly excluding
+    the case where a named vendor still matches more than one candidate.
+    Confirms the corrected wording reaches the real prompt."""
+    candidates_raw = [
+        {"chunk_id": "demo_010", "source": "synthetic_demo", "text": "SAMPLE COFFEE CO.\nDate: 01/02/2026\nTOTAL 9.75"},
+        {"chunk_id": "demo_011", "source": "synthetic_demo", "text": "SAMPLE COFFEE CO.\nDate: 03/09/2026\nTOTAL 14.50"},
+    ]
+    prompt_candidates = format_candidates(candidates_raw)
+
+    fake_response = Mock()
+    fake_response.choices = [Mock(message=Mock(content=(
+        '{"route": "clarify", "answer": null, '
+        '"clarification_question": "Which Sample Coffee Co. receipt -- 01/02/2026 or 03/09/2026?", '
+        '"cited_passage_ids": [], "supporting_quote": null, "reasoning": "vendor matches two candidates"}'
+    )))]
+    fake_client = Mock()
+    fake_client.chat.completions.create.return_value = fake_response
+
+    with patch("app.agent.llm._get_client", return_value=fake_client), \
+         patch("app.agent.llm._get_model", return_value="Qwen/Qwen3.5-9B"):
+        result = assess_evidence(
+            "What is the total at Sample Coffee Co.?",
+            gathered_context="[passage_id=demo_010] (synthetic_demo)\nSAMPLE COFFEE CO.\nDate: 01/02/2026\nTOTAL 9.75"
+                              "\n\n[passage_id=demo_011] (synthetic_demo)\nSAMPLE COFFEE CO.\nDate: 03/09/2026\nTOTAL 14.50",
+            candidates=prompt_candidates,
+        )
+
+    sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "does NOT by itself single out which one is meant" in sent_prompt
+    assert "MORE THAN ONE of the retrieved candidates" in sent_prompt
+    assert result["route"] == "clarify"

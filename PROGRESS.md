@@ -971,7 +971,7 @@ Docker access was intermittently broken in this sandboxed session (two separate 
 
 `docker build -t doc-rag:latest .` succeeded. Total build time ≈ **17.4 minutes**, dominated by: the baked-in model-weight download/cache step (**650.3 s**, ~10.8 min — downloading `bge-large-en-v1.5` + `bge-reranker-large` from Hugging Face Hub at build time, not deferred to the first request anymore) and image export/unpack (**169.5 s**). `requirements-deploy.txt` install: 133.0 s. CPU-only PyTorch install: 80.3 s. apt (tesseract): 12.5 s.
 
-**Image size — reported honestly with the discrepancy, not papered over**: three different Docker-side views gave three different numbers: `docker images`/`docker system df -v` SIZE/DISK USAGE = **9.1 GB**; the same command's newer CONTENT SIZE column = **3.44 GB**; `du -sh /` measured *inside the running container* = **5.2 GB** (1.9 GB `/usr` for Python + packages, 3.4 GB `/opt` for the baked-in model cache, negligible elsewhere). These don't reconcile cleanly from the tools available in this session — most likely explained by how much of the `python:3.12-slim` base image's own layers get counted as "this image's" size vs. shared/base content, not a sign the build did something wrong (the live, in-container filesystem view and the real package/model sizes add up consistently with the 3.4–5.2 GB range). For Artifact Registry storage billing, the real pushed/stored size is almost certainly in that 3.4–5.2 GB range, not 9.1 GB — worth re-confirming with an actual `docker push` to a real registry before trusting either number as the final billing basis.
+**Image size — reported honestly with the discrepancy, not papered over**: three different Docker-side views gave three different numbers: `docker images`/`docker system df -v` SIZE/DISK USAGE = **9.1 GB**; the same command's newer CONTENT SIZE column = **3.44 GB**; `du -sh /` measured *inside the running container* = **5.2 GB** (1.9 GB `/usr` for Python + packages, 3.4 GB `/opt` for the baked-in model cache, negligible elsewhere). These don't reconcile cleanly from the tools available in this session — most likely explained by how much of the `python:3.12-slim` base image's own layers get counted as "this image's" size vs. shared/base content, not a sign the build did something wrong (the live, in-container filesystem view and the real package/model sizes add up consistently with the 3.4–5.2 GB range). **Correction**: an earlier version of this report asserted the real Artifact Registry billing basis is "almost certainly" 3.4–5.2 GB and not 9.1 GB — that was an overclaim given the actual evidence (three Docker-side tools disagreeing, with no registry push performed to settle it). The correct statement is: **which of these numbers Artifact Registry would actually bill against is unverified** — a push to a real registry (even a throwaway one) is the only way to know, and until that happens, 9.1 GB has not been ruled out as the real stored/billable size. Re-run the earlier cost estimate using whichever figure that push reports before treating any image-storage number in this file as final.
 
 ### Container smoke tests (real Together calls, real tesseract OCR, no mocks)
 
@@ -1005,3 +1005,42 @@ Docker access was intermittently broken in this sandboxed session (two separate 
 Estimated API spend this round (container calls aren't wrapped by the Python usage tracker used in earlier rounds, so this is an estimate from this session's own already-measured per-flow averages, not a fresh assumption): **~$0.0047**. **Cumulative estimated spend across the whole engagement: ~$0.0167 of the $0.25 budget.**
 
 No Google Cloud resource created. No deploy run. The built image (`doc-rag:latest`, local only, never pushed anywhere) is left on disk for the next step.
+
+## Milestone 5 continued — root-caused and fixed the four clarification failures; one still open (Standard RAG)
+
+### Investigation (prompts/settings/candidates compared across commits, not just this round's build)
+
+Confirmed first, before changing anything: the AGENT's retrieved candidates were never the problem. The earlier container smoke test's own execution trace for "What is the tax?" already showed 5 real results retrieved and a reasoning string that explicitly said *"The question 'What is the tax?' lacks context (no specific store or receipt named). While documents for Example Grocers,..."* — i.e. the model correctly recognized the ambiguity in its own reasoning and still picked `insufficient_evidence` over `clarify`. That ruled out retrieval/candidate-formatting as the cause and pointed at the route-criteria wording itself.
+
+Diffing `app/agent/llm.py` across the two most recent commits that touched it found two real wording bugs, both introduced by this project's own earlier fixes, not by the container build:
+
+1. **The evidence-support-gate round (`f113099`) widened `insufficient_evidence`'s criterion** to cover "the right document was found but it simply doesn't state the specific fact asked about" — correct for its own purpose (the payment-method hallucination), but broad enough that a model could satisfy it for a question naming NO document at all ("the tax" in the abstract isn't stated by any single receipt either), competing with `clarify` for exactly the cases `clarify` should own.
+2. **The routing-fix round (`c71b0dd`) wrote "if the question already names a specific vendor or document, don't ask which one"** — true only when that name actually narrows the candidates to one. False when more than one retrieved candidate shares that vendor (e.g. two receipts from the same vendor on different dates) — the user caught this directly: naming a vendor does not uniquely identify a receipt when several receipts share it, and the old wording didn't account for that.
+
+### Fix: one corrected rule, grounded in the actual candidate list, not hardcoded to any question
+
+Rewrote the `"clarify"`/`"insufficient_evidence"` criteria and the `candidate_note` in `app/agent/llm.py` (and the equivalent `disambiguation_block` in `scripts/llm_client.py` for Standard RAG, same principle, kept consistent across both as this project has done throughout): **`clarify` applies whenever the question does not single out exactly ONE retrieved candidate** — either because it names no document at all, or because what it names still matches more than one candidate; **`insufficient_evidence` applies only once exactly one candidate has been singled out**, and that one doesn't answer the question. This removes the false "naming a vendor always resolves it" premise and removes the overlap that let `insufficient_evidence` absorb genuine document-selection-ambiguity cases.
+
+Deterministic regression coverage added (`tests/test_disambiguation.py`): `test_standard_prompt_does_not_treat_a_shared_vendor_name_as_uniquely_identifying` and `test_agent_prompt_does_not_treat_a_shared_vendor_name_as_uniquely_identifying` — both construct two candidates sharing one vendor name and confirm the corrected wording reaches the real prompt (agent version also confirms a mocked `"clarify"` response is accepted). Updated two prior-round tests whose assertions checked for the old, now-replaced wording. Full suite: **88 passed, 11 skipped**.
+
+### Verification: a small fixed set, run 3 times each, every result reported (not rerun until green)
+
+`eval/together_clarify_regression_verification.py` (+ `_part2.py`, a continuation after the first invocation hit an outer 280s process timeout mid-run — same investigation, split only because of that, not two separate studies; results merged into one file). Five scenarios × 3 real runs each against the real Together endpoint:
+
+| Scenario | Expectation | Results (3 runs each) |
+|---|---|---|
+| A. Ambiguous, no document named ("What is the total?"), **Standard RAG** | clarify | **0/3** — all three said "I don't know" (one explicitly enumerated all 5 candidate vendors' totals in its own answer text and still didn't use the `CLARIFICATION_NEEDED:` format) |
+| B. Explicitly identified, unique receipt (Agent) | answer / $156.42 | 3/3 ✅ |
+| C. Missing information, named document (Agent) | insufficient_evidence | 3/3 ✅ |
+| D. Clarify → follow-up round-trip ("What is the tax?", Agent) | clarify, then resolved answer / $8.00 | **3/3 reached clarify** (a real improvement over the container smoke test's 0/4); 2/3 fully resolved correctly on resume, 1/3 resumed into `insufficient_evidence` instead of the correct answer — reported as a separate, smaller finding, not folded into a false "3/3" |
+| E. Shared vendor, synthetic (two "Sample Coffee Co." receipts, different dates — the NEW fix) | clarify | 3/3 ✅ — each clarifying question correctly named both dates and their distinct totals |
+
+**The Agent-side fix worked well (B, C, E clean; D mostly). Standard RAG's ambiguous-question handling did not improve, and the root cause is different from what the wording fix addresses**: Standard RAG's `CLARIFICATION_NEEDED:` protocol depends on the model emitting an exact, literal string prefix in free text, which proved unreliable even when the model's own reasoning was correct — a structural fragility of prefix-matched free text versus the Agent's constrained JSON-schema `route` enum, not a logic/wording defect this round's fix could reach. **Not fixed in this round** — flagged clearly rather than claimed resolved; a real fix would likely mean giving Standard RAG a structured decision field similar to the Agent's, a larger change not authorized here.
+
+Tracked precisely via the real usage tracker for every call in this investigation: **$0.0117 spent this investigation**, cumulative estimated spend across the whole engagement: **$0.0284 of the $0.25 budget**.
+
+### Correction to the prior deployment report
+
+The earlier container-build section asserted the real Artifact Registry billing size is "almost certainly" 3.4–5.2 GB and not 9.1 GB. That was an overclaim — three Docker-side tools disagreed and no registry push was performed to settle it. Corrected in that section: **which figure Artifact Registry would actually bill against remains unverified** until a real push happens; 9.1 GB has not been ruled out.
+
+No Google Cloud resource created. No deploy run.

@@ -172,13 +172,17 @@ def assess_evidence(question: str, gathered_context: str, candidates: list[dict]
     if candidates and len(candidates) >= 2:
         choices = "\n".join(f"- {c['label']}" for c in candidates)
         candidate_note = (
-            f"\n\nRetrieval also found these distinct documents comparably relevant to this question:\n"
-            f"{choices}\nOnly treat this as grounds for \"clarify\" if the ORIGINAL QUESTION ITSELF "
-            "doesn't already say which document/vendor it means, AND these candidates could genuinely "
-            "give different answers to it. If the question already names a specific vendor or document, "
-            "these other candidates are retrieval noise, not alternatives -- do not ask which one; use "
-            "\"insufficient_evidence\" instead if the named one doesn't answer the question. Likewise, if "
-            "none of them actually address the question, that's \"insufficient_evidence\", not \"clarify\"."
+            f"\n\nRetrieval also found these distinct documents (by retrieval identity, not just "
+            f"vendor text) comparably relevant to this question:\n{choices}\n"
+            "These are DIFFERENT documents even if two or more share the same vendor name -- a vendor "
+            "appearing more than once above means that vendor still has multiple distinct candidate "
+            "receipts, and naming that vendor does NOT by itself single out which one is meant.\n"
+            "Use \"clarify\" if the question does not single out exactly ONE of these candidates -- "
+            "either because it names no document/vendor/value at all, OR because what it names still "
+            "matches MORE THAN ONE of the candidates above -- AND the remaining candidates could "
+            "genuinely give different answers. Use \"insufficient_evidence\" instead only if the "
+            "question singles out exactly one candidate and that one doesn't answer it, or if none of "
+            "the candidates actually address the question at all."
         )
     prompt = f"""Question: {question}
 
@@ -199,8 +203,8 @@ is, do not adopt the conflicting claim — use the printed value and say so in y
 
 Decide the route:
 - "answer" ONLY if some passage's text EXPLICITLY STATES the specific fact the question asks for, and you can copy a short, verbatim (word-for-word, not paraphrased) excerpt of it into supporting_quote. Finding the right document (e.g. the named vendor) tells you WHICH document to check -- it does NOT by itself mean the specific fact asked about is written in it. A receipt being real, relevant, and about the right vendor is not evidence that it mentions, say, a payment method, a due date, or any other specific attribute unless that attribute's value is actually printed in it. If you cannot point to the literal words stating the answer, you do not have enough evidence -- use "insufficient_evidence" instead, even though the document itself is relevant. Cite the passage_id(s) you used.
-- "clarify" if the question ITSELF doesn't say which document, vendor, or value it means (e.g. "What is the total?" with no document named), and asking the user which one they mean would let you answer. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence". It also applies when the question names no specific document AND retrieval found MULTIPLE comparably-relevant documents that could each independently and plausibly answer it with a DIFFERENT value — silently picking one of several equally-valid candidates is worse than asking. Do NOT use "clarify" to ask which document when the question ALREADY names one (a specific vendor, business name, or document) — in that case the document is already chosen; other documents retrieval happens to return alongside it are not a reason to ask again, see "insufficient_evidence" below.
-- "insufficient_evidence" if the question is specific enough to search for (including when it already names a specific document/vendor) but a reasonable search genuinely found nothing relevant to what's being ASKED, OR the right document was found but it simply doesn't state the specific fact asked about — the information just isn't in the available documents. This is still correct even if multiple documents were retrieved, as long as none of them actually answer the question being asked: a question naming one vendor is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, when the question already said which document it means.
+- "clarify" if the question does not single out exactly ONE retrieved candidate document -- either because it names no document/vendor/value at all (e.g. "What is the total?"), OR because what it DOES name still matches MORE THAN ONE of the retrieved candidates (e.g. it names a vendor, but that vendor has more than one receipt among the candidates -- naming a vendor only resolves ambiguity when it actually narrows the candidates down to one, not when several candidates could still match it) -- AND those remaining candidates could each independently and plausibly answer the question with a DIFFERENT value. Silently picking one of several still-possible candidates is worse than asking. This applies even if no passages were retrieved yet: if the reason nothing was found is that the question doesn't say WHICH document/value it means, that is "clarify", not "insufficient_evidence".
+- "insufficient_evidence" applies ONLY once the question (by what it names, or because only one retrieved candidate matches what it named) singles out exactly ONE specific document, but that one document doesn't state the specific fact asked about -- OR a reasonable search genuinely found nothing relevant to what's being asked at all. Do NOT reach for "insufficient_evidence" just because no single document states a value for the question's subject in the abstract (e.g. "the tax" with no receipt named) -- if the question still matches more than one retrieved candidate, that is "clarify" (see above), not "insufficient_evidence", even though no one document alone answers the unqualified question. A question naming one vendor that matches only ONE candidate is not "ambiguous" just because retrieval also returned other, unrelated vendors' documents alongside it — those are noise, not alternative candidates, once the named vendor has already narrowed it to one.
 
 Respond with the route, the answer (only if route is "answer"), a clarification_question (only if route is "clarify", naming the specific candidates from the list above if one was given), the passage_id(s) actually used to answer (if any), a supporting_quote (REQUIRED if route is "answer", null otherwise: the exact words from the excerpts that state the answer, copied verbatim -- not a paraphrase, not the passage_id, not your own restatement), and brief reasoning.
 
