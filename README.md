@@ -10,7 +10,7 @@ Does structured metadata extracted from business documents actually improve RAG 
 
 | Steps 0–6 | Step 7 | Step 8 |
 |---|---|---|
-| ✅ **Complete** — environment, corpus, retrieval, evaluation, reranker ablation, error analysis | ✅ **Complete** — README and research write-up | 🔧 **In progress, separately tracked** — see [Next step](#next-step-deployment) and `PROGRESS.md` |
+| **Complete** — environment, corpus, retrieval, evaluation, reranker ablation, error analysis | **Complete** — README and research write-up | **In progress, separately tracked** — see [Next step](#next-step-deployment) and `PROGRESS.md` |
 
 All results below come from Steps 4–6, already run and verified. This research corpus/pipeline is never served publicly — the deployment effort (`PROGRESS.md`) wraps a separate, synthetic demo corpus instead.
 

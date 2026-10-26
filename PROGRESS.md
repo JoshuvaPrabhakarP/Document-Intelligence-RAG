@@ -734,16 +734,16 @@ Fixed both, then verified with one minimal real call (`max_tokens=5`, captured t
 
 | # | Question-flow | Workflow | Result | Model calls | Latency | Prompt / completion tokens | Cost |
 |---|---|---|---|---|---|---|---|
-| 1 | Correct total + citation | Standard | ✅ pass | 1 | 662 ms | 670 / 6 | $0.000115 |
-| 2 | Missing-info fallback | Standard | ✅ pass | 1 | 269 ms | 691 / 6 | $0.000119 |
-| 3 | Ambiguous → clarify | Standard | ❌ fail (behavioral) | 1 | 697 ms | 792 / 6 | $0.000136 |
-| 4 | Clarify follow-up → correct | Standard | ✅ pass | 1 | 433 ms | 679 / 6 | $0.000117 |
-| 5 | Correct total, genuine tool call | Agent | ✅ pass | 3 | 4547 ms | 3311 / 171 | $0.000606 |
-| 6 | Missing-info fallback | Agent | ❌ fail (behavioral) | 4 | 3245 ms | 3401 / 194 | $0.000626 |
-| 7 | Ambiguous → clarify, schema-accepted | Agent | ✅ pass | 3 | 5916 ms | 3346 / 476 | $0.000688 |
-| 8 | Clarify follow-up → correct | Agent | ✅ pass | 3 | 4985 ms | 5071 / 172 | $0.000904 |
-| 9 | Thinking ENABLED comparison | Standard | ❌ fail (see below) | 1 | 4454 ms | 648 / 400 | $0.000210 |
-| 10 | Agent consistency check | Agent | ✅ pass | 4 | 4572 ms | 3590 / 227 | $0.000667 |
+| 1 | Correct total + citation | Standard | Pass | 1 | 662 ms | 670 / 6 | $0.000115 |
+| 2 | Missing-info fallback | Standard | Pass | 1 | 269 ms | 691 / 6 | $0.000119 |
+| 3 | Ambiguous → clarify | Standard | Fail (behavioral) | 1 | 697 ms | 792 / 6 | $0.000136 |
+| 4 | Clarify follow-up → correct | Standard | Pass | 1 | 433 ms | 679 / 6 | $0.000117 |
+| 5 | Correct total, genuine tool call | Agent | Pass | 3 | 4547 ms | 3311 / 171 | $0.000606 |
+| 6 | Missing-info fallback | Agent | Fail (behavioral) | 4 | 3245 ms | 3401 / 194 | $0.000626 |
+| 7 | Ambiguous → clarify, schema-accepted | Agent | Pass | 3 | 5916 ms | 3346 / 476 | $0.000688 |
+| 8 | Clarify follow-up → correct | Agent | Pass | 3 | 4985 ms | 5071 / 172 | $0.000904 |
+| 9 | Thinking ENABLED comparison | Standard | Fail (see below) | 1 | 4454 ms | 648 / 400 | $0.000210 |
+| 10 | Agent consistency check | Agent | Pass | 4 | 4572 ms | 3590 / 227 | $0.000667 |
 
 **7/10 passed. Total: 22 model calls, 22,199 input tokens, 1,664 output tokens, $0.004190 of the $0.25 budget (never close to the cap; `stopped_early_for_budget: false`).** Reasoning-token usage: `"unavailable"` for every call — Together's responses for this model never populated `completion_tokens_details.reasoning_tokens` in any call, including the thinking-ENABLED one, so there's nothing to double-count; its cost is already fully inside `completion_tokens`. Full per-call detail: `eval/results/together_compat_test.json`.
 
@@ -804,10 +804,10 @@ Full suite: **80 passed, 11 skipped** (the skips are the pre-existing real-Ollam
 
 | Case | Expected | Observed | Result |
 |---|---|---|---|
-| "What is the total?" (original) | clarify | clarify — asked which of 5 real vendor names | ✅ |
-| "Could you tell me the total amount?" (paraphrase) | clarify | clarify — asked which of 5 real vendor names | ✅ |
-| "What payment method was used on the Sample Coffee Co. receipt?" (original) | insufficient_evidence | insufficient_evidence | ✅ |
-| "How was the purchase at Sample Coffee Co. paid for?" (paraphrase) | insufficient_evidence | **answer** (see below) | ❌ |
+| "What is the total?" (original) | clarify | clarify — asked which of 5 real vendor names | Pass |
+| "Could you tell me the total amount?" (paraphrase) | clarify | clarify — asked which of 5 real vendor names | Pass |
+| "What payment method was used on the Sample Coffee Co. receipt?" (original) | insufficient_evidence | insufficient_evidence | Pass |
+| "How was the purchase at Sample Coffee Co. paid for?" (paraphrase) | insufficient_evidence | **answer** (see below) | Fail |
 
 **The fourth result is a separate, more serious finding, reported honestly rather than folded into "still some flakiness"**: this paraphrase got the model to fabricate or misattribute a fact. Rerun twice: once it answered "paid for with cash" (the receipt text has no payment-method field at all — a straight hallucination), once it answered "paid for with a total of $9.75" (conflating "how was it paid for" with "what was the total," then citing that as if it answered the question). Both are grounding/comprehension failures on this specific idiomatic phrasing, not a routing-architecture bug — the routing fix above worked correctly on every case that actually named the ambiguity or the absent attribute in more literal wording. This is flagged as a known limitation of this model on idiomatic paraphrases of "insufficient evidence" questions, explicitly **out of scope** of the two routing-rule fixes just made (fixing it would mean tightening grounding/anti-hallucination behavior generally, a different, larger change not authorized in this round) — not deployed around, not hidden.
 
@@ -845,14 +845,14 @@ Full suite: **84 passed, 11 skipped** (same expected skips as before — real-Ol
 
 | Check | Expected | Result |
 |---|---|---|
-| Original failing question ("What payment method...Sample Coffee Co....?") | insufficient_evidence | ✅ |
-| Previously-failing paraphrase ("How was the purchase...paid for?") | insufficient_evidence | ✅ |
-| Fresh paraphrase ("...pay in cash or by card?") | insufficient_evidence | ✅ |
-| Fresh paraphrase ("What was the method of payment...?") | insufficient_evidence | ✅ |
-| Synthetic receipt WITH an explicit "Payment Method: Credit Card" line (via the same `execute_search_documents` patch technique `tests/test_agent.py` already uses for injection tests — fabricated test data, not a real document) | answer, mentioning Credit Card | ✅ — answered correctly, confirming the gate doesn't just reject everything |
-| Regression: total + citation (Example Grocers Inc.) | answer, "42.17" | ✅ |
-| Regression: ambiguous clarify ("What is the tax?") | clarify | ✅ |
-| A different absent-attribute domain ("loyalty rewards discount", not payment) | insufficient_evidence | ✅ — confirms the rule is general, not special-cased to payment questions |
+| Original failing question ("What payment method...Sample Coffee Co....?") | insufficient_evidence | Pass |
+| Previously-failing paraphrase ("How was the purchase...paid for?") | insufficient_evidence | Pass |
+| Fresh paraphrase ("...pay in cash or by card?") | insufficient_evidence | Pass |
+| Fresh paraphrase ("What was the method of payment...?") | insufficient_evidence | Pass |
+| Synthetic receipt WITH an explicit "Payment Method: Credit Card" line (via the same `execute_search_documents` patch technique `tests/test_agent.py` already uses for injection tests — fabricated test data, not a real document) | answer, mentioning Credit Card | Pass — answered correctly, confirming the gate doesn't just reject everything |
+| Regression: total + citation (Example Grocers Inc.) | answer, "42.17" | Pass |
+| Regression: ambiguous clarify ("What is the tax?") | clarify | Pass |
+| A different absent-attribute domain ("loyalty rewards discount", not payment) | insufficient_evidence | Pass — confirms the rule is general, not special-cased to payment questions |
 
 **All 8 live checks passed.** Cumulative spend across the entire engagement: **$0.011102 of the $0.25 budget** (this round: $0.005012).
 
@@ -977,16 +977,16 @@ Docker access was intermittently broken in this sandboxed session (two separate 
 
 | Check | Result |
 |---|---|
-| `/health` | ✅ responds in ~1.7 s from `docker run` |
-| `/ready` (the fix from two rounds ago) | ✅ `true` in the real container too — generic `/models` check works |
-| Agent: correct total + real citation reaching the API response | ✅ `$42.17`, 1 source cited |
-| Agent: fallback (insufficient evidence), confirming the `cited_passage_ids` leak fix | ✅ `insufficient_evidence`, `sources: []` — no stray citation, matching last round's fix |
-| Agent: clarification follow-up | ❌ **not reproduced** — see below |
-| Synthetic upload + real OCR (a rendered PNG, not a real document) | ✅ tesseract correctly read vendor name, date, "Payment Method: Debit Card", and "TOTAL 63.21" from the image |
-| Upload-mode query, Standard RAG, against the OCR'd text | ✅ answered "Debit Card", `has_sufficient_evidence: true` — genuinely supported (the OCR'd text literally states it) |
-| Upload-mode query, Agent workflow, same document | ✅ answered the total correctly |
-| No credential leak | ✅ confirmed: `docker logs` shows only request URLs (httpx's default logging), never a header value; `docker inspect .Config.Env` has no secret; no `.env`/credential file found anywhere in the image |
-| Model weights load offline | ✅ confirmed two ways: (1) `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` were active for every query above and every one succeeded — if the cache had been incomplete this would have failed immediately, not silently downloaded; (2) `docker logs` shows no download or Hub-reachability log line at all |
+| `/health` | Pass — responds in ~1.7 s from `docker run` |
+| `/ready` (the fix from two rounds ago) | Pass — `true` in the real container too — generic `/models` check works |
+| Agent: correct total + real citation reaching the API response | Pass — `$42.17`, 1 source cited |
+| Agent: fallback (insufficient evidence), confirming the `cited_passage_ids` leak fix | Pass — `insufficient_evidence`, `sources: []` — no stray citation, matching last round's fix |
+| Agent: clarification follow-up | Fail — not reproduced, see below |
+| Synthetic upload + real OCR (a rendered PNG, not a real document) | Pass — tesseract correctly read vendor name, date, "Payment Method: Debit Card", and "TOTAL 63.21" from the image |
+| Upload-mode query, Standard RAG, against the OCR'd text | Pass — answered "Debit Card", `has_sufficient_evidence: true` — genuinely supported (the OCR'd text literally states it) |
+| Upload-mode query, Agent workflow, same document | Pass — answered the total correctly |
+| No credential leak | Pass — confirmed: `docker logs` shows only request URLs (httpx's default logging), never a header value; `docker inspect .Config.Env` has no secret; no `.env`/credential file found anywhere in the image |
+| Model weights load offline | Pass — confirmed two ways: (1) `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` were active for every query above and every one succeeded — if the cache had been incomplete this would have failed immediately, not silently downloaded; (2) `docker logs` shows no download or Hub-reachability log line at all |
 
 **Clarification follow-up finding, reported plainly rather than smoothed over**: ran the exact same question ("What is the tax?", agent workflow) **four times** in this session, expecting the `clarify` route this project has demonstrated working in two earlier rounds (the original 10-question compat test, and the dedicated routing-fix verification). Results this round: `insufficient_evidence`, `insufficient_evidence`, an unclear non-clarify outcome, `insufficient_evidence` again — **zero clean `clarify` results in four real attempts**, where earlier rounds got it right. One attempt's reasoning explicitly said *"The question 'What is the tax?' lacks context (no specific store or receipt named). While documents for Example Grocers,..."* — correctly recognizing the ambiguity in its own stated reasoning — and still chose `insufficient_evidence` over `clarify`. This is plain, real-model sampling variance (same non-zero-temperature, single-sample-is-not-proof caveat this project has stated from the start), not a code regression — nothing about the `/ready`, citation, or OCR paths was touched since the last round's successful clarify demonstrations. Still, four misses in a row is a genuinely higher miss rate than anything measured so far for this specific scenario, and is flagged here as worth a dedicated repeated-sampling study (the same kind `eval/injection_variability.py` already did for the injection-resistance question) if this matters for a real deployment decision — **not investigated further or fixed in this round**, since this round's scope was build-and-verify, not re-tune routing prompts again.
 
@@ -1030,10 +1030,10 @@ Deterministic regression coverage added (`tests/test_disambiguation.py`): `test_
 | Scenario | Expectation | Results (3 runs each) |
 |---|---|---|
 | A. Ambiguous, no document named ("What is the total?"), **Standard RAG** | clarify | **0/3** — all three said "I don't know" (one explicitly enumerated all 5 candidate vendors' totals in its own answer text and still didn't use the `CLARIFICATION_NEEDED:` format) |
-| B. Explicitly identified, unique receipt (Agent) | answer / $156.42 | 3/3 ✅ |
-| C. Missing information, named document (Agent) | insufficient_evidence | 3/3 ✅ |
+| B. Explicitly identified, unique receipt (Agent) | answer / $156.42 | 3/3 — Pass |
+| C. Missing information, named document (Agent) | insufficient_evidence | 3/3 — Pass |
 | D. Clarify → follow-up round-trip ("What is the tax?", Agent) | clarify, then resolved answer / $8.00 | **3/3 reached clarify** (a real improvement over the container smoke test's 0/4); 2/3 fully resolved correctly on resume, 1/3 resumed into `insufficient_evidence` instead of the correct answer — reported as a separate, smaller finding, not folded into a false "3/3" |
-| E. Shared vendor, synthetic (two "Sample Coffee Co." receipts, different dates — the NEW fix) | clarify | 3/3 ✅ — each clarifying question correctly named both dates and their distinct totals |
+| E. Shared vendor, synthetic (two "Sample Coffee Co." receipts, different dates — the NEW fix) | clarify | 3/3 — Pass — each clarifying question correctly named both dates and their distinct totals |
 
 **The Agent-side fix worked well (B, C, E clean; D mostly). Standard RAG's ambiguous-question handling did not improve, and the root cause is different from what the wording fix addresses**: Standard RAG's `CLARIFICATION_NEEDED:` protocol depends on the model emitting an exact, literal string prefix in free text, which proved unreliable even when the model's own reasoning was correct — a structural fragility of prefix-matched free text versus the Agent's constrained JSON-schema `route` enum, not a logic/wording defect this round's fix could reach. **Not fixed in this round** — flagged clearly rather than claimed resolved; a real fix would likely mean giving Standard RAG a structured decision field similar to the Agent's, a larger change not authorized here.
 
@@ -1071,8 +1071,8 @@ This changes what `supporting_quote` needs to prove: a multi-receipt answer cite
 |---|---|---|
 | 1. The previously-failed follow-up (ambiguous → resume with "Fictional Hardware Supply") | clarify, then answer/$8.00 | **3/3** reached clarify and fully resolved correctly |
 | 2. Shared-vendor ambiguity (synthetic, two Sample Coffee Co. receipts) | clarify | 2/3 asked for clarification correctly, naming both dates/totals; **1/3 answered both totals directly instead of asking** — not wrong information, a defensible alternate response, but not the expected route; noted honestly as a possible side effect of making the model more willing to answer across multiple documents |
-| 3. Uniquely identified receipt (Fictional Hardware Supply) | answer/$156.42 | 2/3 ✅; 1/3 `insufficient_evidence` with no real cause — ordinary model noise unrelated to this round's change, this exact question type has succeeded reliably in every prior round |
-| 4. Intentional multi-receipt comparison ("which receipt has a higher total, Example Grocers Inc. or Mock Bookstore?") | answer (not clarify), citing both | **3/3** ✅ — answered directly every time, correct totals, both passages cited |
+| 3. Uniquely identified receipt (Fictional Hardware Supply) | answer/$156.42 | 2/3 Pass; 1/3 `insufficient_evidence` with no real cause — ordinary model noise unrelated to this round's change, this exact question type has succeeded reliably in every prior round |
+| 4. Intentional multi-receipt comparison ("which receipt has a higher total, Example Grocers Inc. or Mock Bookstore?") | answer (not clarify), citing both | **3/3** Pass — answered directly every time, correct totals, both passages cited |
 
 Tracked precisely via the real usage tracker: **$0.012266 spent on this verification.**
 
