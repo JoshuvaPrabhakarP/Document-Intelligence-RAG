@@ -150,8 +150,17 @@ def test_assess_evidence_receives_the_full_clarification_context_on_resume():
         prior_retrieved_passages={"p1": {"chunk_id": "c1", "source": "vendor_alpha.pdf", "text": "TOTAL 10.00", "score": 1.0}},
         session_mode="demo", session_id=None,
     )
-    with patch.object(agent_graph, "assess_evidence", side_effect=fake_assess):
-        agent_graph.build_graph().invoke(state)
+    with patch.object(
+        agent_graph, "call_with_tools",
+        return_value=_llm_result(content="Found the selected receipt."),
+    ) as mock_llm, patch.object(
+        agent_graph, "assess_evidence", side_effect=fake_assess,
+    ) as mock_assess:
+        result = agent_graph.build_graph().invoke(state)
+
+    mock_llm.assert_called_once()
+    mock_assess.assert_called_once()
+    assert result["error"] is None
 
     assert "Vendor Alpha" in captured["question"]
     assert "What is the total?" in captured["question"]
