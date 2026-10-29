@@ -10,6 +10,11 @@ pinned: false
 
 # Enterprise Document Intelligence RAG
 
+> **Learning guide:** for a from-evidence technical walkthrough of this
+> entire project — research and application, architecture, bugs and fixes,
+> testing, configuration, and real deployment status — see
+> [`docs/learning/INDEX.md`](docs/learning/INDEX.md).
+
 Does structured metadata extracted from business documents actually improve RAG retrieval — and how much does *imperfect*, model-extracted metadata erode that benefit compared to ground truth? This project builds a full retrieval-augmented question-answering pipeline over three real receipt datasets (SROIE, WildReceipt, CORD — 3,712 documents), runs a controlled 5×2 experiment matrix (5 retrieval strategies × 2 metadata sources), and reports the results honestly, including the ones that didn't come out clean.
 
 **Novel contribution:** the metadata-quality linkage table — correlating upstream extraction F1 (from a previously trained Transformer model) against downstream retrieval Recall@10. This connects this project to its predecessor (`hybrid-doc-extractor`, the model that produces the "imperfect" metadata) into one coherent two-part story.
@@ -20,9 +25,90 @@ Does structured metadata extracted from business documents actually improve RAG 
 
 | Steps 0–6 | Step 7 | Step 8 |
 |---|---|---|
-| **Complete** — environment, corpus, retrieval, evaluation, reranker ablation, error analysis | **Complete** — README and research write-up | **In progress, separately tracked** — see [Next step](#next-step-deployment) and `PROGRESS.md` |
+| **Complete** — environment, corpus, retrieval, evaluation, reranker ablation, error analysis | **Complete** — README and research write-up | **Local application and LangGraph agent: implemented and tested. Public hosting: deferred (cost) — see [Next step](#next-step-deployment)** |
 
-All results below come from Steps 4–6, already run and verified. This research corpus/pipeline is never served publicly — the deployment effort (`PROGRESS.md`) wraps a separate, synthetic demo corpus instead.
+All results below come from Steps 4–6, already run and verified. This research corpus/pipeline is never served publicly — the demo application below wraps a separate, synthetic demo corpus instead.
+
+## Try the local demo
+
+This is the deployable application built on top of the research above: a FastAPI backend with a hand-built web frontend, a Standard RAG workflow and a LangGraph agent workflow, receipt upload with OCR, and answer generation via Together.ai's hosted API. **This is a local demo you run yourself, not a public website** — see [Next step: deployment](#next-step-deployment) for why.
+
+### What it does
+
+Ask questions about receipts — either the synthetic sample receipts bundled with the repo, or ones you upload yourself (JPG/PNG/PDF) — and get grounded answers with citations back to the specific receipt text that supports them. Two answering modes are available side by side: a direct retrieve-then-generate pipeline (Standard RAG), and a LangGraph agent that searches, fetches, and assesses evidence itself, can ask a clarifying question if your question is ambiguous between several receipts, and verifies its own cited evidence is actually present in the retrieved text before answering.
+
+### Prerequisites
+
+- **Git**
+- **Docker** (tested with Docker Desktop's WSL2 integration on Ubuntu, and with Docker directly on Linux)
+- **A Together.ai account and API key** — required for generated answers. Create an account at [together.ai](https://together.ai), add a small prepaid balance (check their current pricing before adding funds), and generate a key at [api.together.ai/settings/api-keys](https://api.together.ai/settings/api-keys). There is no free tier for this step; using your own key means you are responsible for your own usage cost (see [Privacy and cost](#privacy-and-cost) below).
+
+### Clone, configure, build, run
+
+```bash
+git clone https://github.com/JoshuvaPrabhakarP/Document-Intelligence-RAG.git
+cd Document-Intelligence-RAG
+cp .env.example .env
+```
+
+Now open `.env` and set `GENERATION_API_KEY` to your own Together.ai key (replace the `your-together-ai-api-key-here` placeholder). Nothing else in `.env` needs to change for the demo to work.
+
+```bash
+docker build -t doc-rag .
+docker run -d --name doc-rag-demo -p 127.0.0.1:8000:8000 --env-file .env doc-rag
+```
+
+**Local demo: [http://127.0.0.1:8000](http://127.0.0.1:8000)** — open that URL in a browser once the container is running.
+
+The port is bound to `127.0.0.1` only (not `0.0.0.0`) deliberately, so the demo is reachable from your own machine only, not your local network — matching the "local demo, not a public deployment" scope above. This is the one command sequence that's actually needed; there is no single command that also handles creating your `.env` or pasting in your own API key for you, since those are things only you can do.
+
+### Using it
+
+The page has two tabs: **Try Sample Receipts** (the bundled synthetic demo corpus) and **Upload Your Documents** (your own JPG/PNG/PDF, OCR'd locally with Tesseract — no third-party OCR service, though see the privacy note below for what happens once you *ask a question* about what you uploaded). A toggle switches between the Standard RAG and Agent workflows; the Agent is the default, since it's the better-verified of the two (see `PROGRESS.md` for why).
+
+Sample questions that work against the bundled demo corpus (also shown as clickable chips in the UI):
+- "What is the total amount on the Example Grocers Inc. receipt?"
+- "Which vendor issued a receipt for $156.42?"
+- "What date is on the Sample Coffee Co. receipt?"
+- "What is the total at Sample Gas Station?"
+
+To try your own receipt: switch to the **Upload Your Documents** tab, drag in a JPG/PNG/PDF (up to 10MB, up to 20 pages), then ask a question about it once it's processed.
+
+### Expected startup time and resource requirements
+
+- **Build**: around 15–20 minutes the first time (downloads and bakes in ~3.5GB of embedding/reranker model weights so the running container never needs network access to Hugging Face). Rebuilding after an app-code-only change is a few seconds (cached layers).
+- **Container startup**: `/health` responds in roughly 2–3 seconds. Models load lazily on first use, not at startup.
+- **First question**: can take anywhere from about 10 to 45 seconds — this is the one-time cost of loading the embedding/reranker models into memory, combined with ordinary real-API response-time variance from Together.ai. Verified directly: one cold run took 43 seconds, a second (warm) run of the same question took 8.5 seconds.
+- **Every question after that**: single-digit seconds typically.
+- **Memory**: give Docker at least 2GB of RAM. Measured peak usage has ranged from about 1.2GB to 2.6GB depending on which workflows get exercised and how memory is measured (`docker stats` vs. raw process RSS give different numbers for the same run — see `PROGRESS.md` for the full measurement detail, not reconciled into a single number here since the discrepancy itself wasn't resolved).
+
+### Limitations
+
+- This is a demo over a small synthetic receipt corpus (about a dozen fabricated receipts), not a production document-intelligence system — it has not been evaluated with the same rigor as the research corpus (see `PROGRESS.md`'s evaluation sections for what *has* been rigorously measured, which is the research pipeline, not this demo corpus).
+- The Agent workflow occasionally makes a wrong routing or answer choice on a real model call — this is measured, real-model sampling variance (see `PROGRESS.md`), not something this demo can guarantee against. Asking again usually resolves it.
+- Standard RAG's ambiguous-question clarification is known to be less reliable than the Agent's (a documented, structural limitation of its free-text output format) — prefer the Agent workflow if a question could match more than one receipt.
+- Uploaded files and any in-progress clarification are stored only in memory/temp storage for the running container and are lost if the container restarts — there is no persistent storage.
+
+### Stopping, restarting, and troubleshooting
+
+```bash
+docker stop doc-rag-demo      # stop the container (uploads/sessions are lost)
+docker start doc-rag-demo     # restart it (same image, no rebuild needed)
+docker logs doc-rag-demo      # see what the app is doing / why something failed
+docker rm -f doc-rag-demo     # remove the container entirely
+```
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `docker build` fails on the model-download step | No network access during build, or Hugging Face Hub temporarily unreachable | Retry the build — it needs network access once, at build time only |
+| `curl http://127.0.0.1:8000/ready` shows `"generation_provider_reachable": false` | `GENERATION_API_KEY` in `.env` is still the placeholder, wrong, or out of prepaid balance | Check `.env`, confirm the key at [api.together.ai/settings/api-keys](https://api.together.ai/settings/api-keys), confirm balance |
+| Browser can't reach `127.0.0.1:8000` | Container isn't running, or the port mapping was typed differently | `docker ps` to check it's `Up`; re-check the `-p 127.0.0.1:8000:8000` flag matches exactly |
+| A question about an uploaded file returns nothing relevant | OCR may have failed to extract text from a low-quality scan, or the file wasn't finished processing yet | Check the extracted-text panel in the UI after upload; re-upload a clearer image if needed |
+| Everything was working, now queries return `503` | The app's own per-IP/global rate limits were hit (by design, see `app/ratelimit.py`) | Wait a minute and retry |
+
+### Privacy and cost
+
+**Relevant excerpts from documents you ask about — the sample receipts or anything you upload — are sent to Together.ai's hosted API to generate the answer.** This is true for both workflows. Don't upload or ask about anything you don't want leaving your machine. Generating answers through your own Together.ai API key uses your own prepaid balance and **may cost you real money** — this project measured roughly $0.0001–0.001 per question in its own testing (see `PROGRESS.md` for the exact measured figures and methodology), but costs can vary with question complexity and Together's current pricing; check your own balance and Together's current rates rather than relying on this estimate.
 
 ## Quick-start prerequisites
 
@@ -246,4 +332,6 @@ python scripts/error_analysis.py --write    # writes data/eval/error_analysis_re
 
 ## Next step: deployment
 
-Superseded by what was actually built, tracked in `PROGRESS.md` (the authoritative, currently-updated status for this part of the project): a FastAPI backend with a hand-built web frontend (not Gradio), a synthetic public demo corpus kept separate from this research corpus, an upload/OCR feature, a LangGraph agentic workflow alongside the Standard RAG baseline, and Milestone 5's deployment packaging (Docker image, CI, rate limits, and a recommended public-hosting architecture). A temporary tunnel to a local machine was explicitly ruled out as a completion criterion — the goal is a public HTTPS deployment that works independently of any one computer being on. See `PROGRESS.md` for exact current status, commands, and remaining steps.
+What was actually built, tracked in `PROGRESS.md` (the authoritative, currently-updated status for this part of the project): a FastAPI backend with a hand-built web frontend (not Gradio), a synthetic public-safe demo corpus kept separate from this research corpus, an upload/OCR feature, a LangGraph agentic workflow alongside the Standard RAG baseline, and Milestone 5's deployment packaging (Docker image, CI, rate limits, a Google Cloud Run deployment plan, and a since-blocked Hugging Face Spaces attempt — see `PROGRESS.md` for what happened there).
+
+**Current, honest status**: the local application and the LangGraph agent are implemented and tested — see [Try the local demo](#try-the-local-demo) above, which you can run yourself right now. **Public hosting has been deferred, explicitly because of its ongoing cost**, not attempted and abandoned as broken. The project's original completion criterion for this part of the work (tracked elsewhere as "Gap 1") was a public HTTPS deployment that works independently of any one computer being on — a local Docker demo does not satisfy that criterion, and a tunnel to a local machine was already explicitly ruled out as satisfying it either, for the same reason. **Running this locally is not a public deployment, and is not described as one anywhere in this project's documentation.** That gap remains open. The deployment files in this repo (`Dockerfile`, `.github/workflows/tests.yml`, the Google Cloud Run plan in `PROGRESS.md`) are kept as-is, ready to use whenever public hosting is pursued — deferring the decision to host publicly is not a decision to remove the capability to do so. See `PROGRESS.md` for the exact current status, every command run so far, and what public hosting would still require.

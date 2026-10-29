@@ -1148,3 +1148,26 @@ gcloud run deploy doc-rag \
 **Budget alerts vs. spending limits**: GCP budget alerts are notification-only — they do not stop billing or throttle resources, can lag behind real charges, and fire at configurable thresholds (50/90/100% by default). There is no built-in hard spending cap for Cloud Run; the real ceiling here is architectural (`max-instances=1` + fixed 4GiB/2vCPU bounds compute regardless of traffic). Set the alert for visibility, not as a safety net.
 
 No Google Cloud resource has been created. No deploy has been run.
+
+## Delivery goal changed: reproducible local demo; public hosting deferred for cost
+
+Per direction, the project's delivery goal for this part of the work is now a reproducible local Docker demo, not a public deployment — public hosting is deferred because of its ongoing cost, not abandoned. Nothing was deployed, no cloud resource was created, and no existing deployment file (`Dockerfile`, `.github/workflows/tests.yml`, the Cloud Run plan, the HF Spaces config) was removed — they're kept exactly as-is for whenever public hosting is pursued.
+
+### What changed
+
+- **`.env.example`** was stale and actively misleading: it still described Ollama as the only generation path needing "no API key," had no `GENERATION_API_KEY` field at all, and still showed `OLLAMA_BASE_URL=http://localhost:11434/v1` / `OLLAMA_MODEL=qwen3:8b` as the working example — none of that matches how this app has actually run since the Together.ai migration. Fixed: added `GENERATION_API_KEY` with a clear placeholder and a direct link to Together's key page, updated the example `OLLAMA_BASE_URL`/`OLLAMA_MODEL` to Together's real values, explained the inherited `OLLAMA_*` naming, and changed `DEVICE=cuda` to `DEVICE=cpu` to match what the Docker image actually runs regardless of this setting.
+- **`README.md`** gained a new "Try the local demo" section (what the app does, prerequisites, exact clone/build/run commands, the local URL labeled "Local demo," real sample questions pulled from `app/main.py::DEMO_SAMPLE_QUESTIONS` rather than invented ones, upload instructions, measured startup time and resource requirements, limitations, stop/restart commands, a troubleshooting table, and a privacy/cost note). The "Project status" table and "Next step: deployment" section were rewritten to state plainly: the local app and LangGraph agent are implemented and tested; public hosting is deferred for cost; the original public-HTTPS completion criterion (tracked elsewhere as "Gap 1") remains unmet; running this locally is never described as a public deployment anywhere in the docs.
+
+### Verified, not assumed — a real fresh-clone build and run
+
+Simulated a fresh clone rather than assuming the existing local Docker image still matched what's documented: copied only `git ls-files`-tracked content (including this round's uncommitted edits, since those are what the eventual commit will contain) into a clean directory and ran the exact documented command sequence against it.
+
+- `docker build -t doc-rag .` — succeeded from the clean directory. (Also surfaced a data point on the earlier unreconciled image-size discrepancy: this particular build reported a consistent 3.45GB for both `docker images`' SIZE and CONTENT SIZE columns, unlike the earlier 9.1GB/3.44GB split — not investigated further here, still not reconciled, mentioned only because it was observed.)
+- `docker run -d -p 127.0.0.1:8000:8000 --env-file .env doc-rag`, started with the `.env.example`'s own placeholder key first: `/health` responded in 2.6s; `/ready` correctly reported `generation_provider_reachable: false` — confirming the readiness check genuinely verifies connectivity rather than assuming success, and that a visitor who forgets to set a real key gets a clear, honest signal rather than a silent failure.
+- Re-ran with a real Together.ai key substituted in (never printed, swapped via file operations only) to verify the documented demo actually works end to end: `/ready` → `true`; a demo question about Fictional Hardware Supply's total → **missed on the first (cold) attempt** (`insufficient_evidence`, 42.99s) → **correct on retry** (`$42.17`, 8.49s, warm) — reported honestly rather than only showing the clean run, and used directly in the README's "first question can take 10–45 seconds" and "asking again usually resolves it" wording; missing-information fallback → correct; ambiguous clarify → follow-up resolve → correct ($8.00, Fictional Hardware Supply tax); synthetic receipt upload → real Tesseract OCR extracted the rendered text correctly; upload-mode query against the OCR'd text → correct ("Cash").
+- This round's estimated Together spend (container calls, not individually tracked by the usage-tracking scripts used elsewhere): ~$0.003. **Cumulative estimated spend across the whole engagement: ~$0.057 of the $0.25 budget.**
+- Test image and container removed after verification; nothing left running.
+
+### Status
+
+`.env.example`, `README.md`, and this `PROGRESS.md` section are all uncommitted, left for review alongside the already-uncommitted `docs/learning/` work from the previous round and the Render-512MB investigation above — nothing in this round was committed or pushed, per instruction. No cloud resource created.
