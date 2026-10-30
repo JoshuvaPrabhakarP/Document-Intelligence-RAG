@@ -1,19 +1,22 @@
----
-title: Document Intelligence RAG
-emoji: 📄
-colorFrom: blue
-colorTo: gray
-sdk: docker
-app_port: 8000
-pinned: false
----
+# Document Intelligence RAG
 
-# Enterprise Document Intelligence RAG
+Ask questions about receipts and documents using hybrid retrieval and a LangGraph agent. Upload a JPG, PNG, or PDF, extract its text locally, and receive answers with source citations.
 
-> **Learning guide:** for a from-evidence technical walkthrough of this
-> entire project — research and application, architecture, bugs and fixes,
-> testing, configuration, and real deployment status — see
-> [`docs/learning/INDEX.md`](docs/learning/INDEX.md).
+Built with Python, FastAPI, LangGraph, FAISS, BM25, BGE embeddings, Tesseract OCR, and Docker. Answer generation uses Together.ai.
+
+| Feature | Implementation |
+| --- | --- |
+| Document processing | PDF text extraction and Tesseract OCR |
+| Hybrid search | Dense retrieval with FAISS, BM25, and Reciprocal Rank Fusion |
+| Reranking | BGE cross-encoder reranker |
+| Agent workflow | Tool calling, evidence assessment, clarification, and fallback |
+| Source citations | Supporting document excerpts alongside answers |
+| Local demo | Docker application with sample receipts and document uploads |
+
+**[Run the local demo](#try-the-local-demo)** · **[Research results](#results)**
+
+> Runs locally with Docker and your own Together.ai API key. Relevant document excerpts are sent to Together.ai for answer generation. Public hosting is currently deferred.
+
 
 Does structured metadata extracted from business documents actually improve RAG retrieval — and how much does *imperfect*, model-extracted metadata erode that benefit compared to ground truth? This project builds a full retrieval-augmented question-answering pipeline over three real receipt datasets (SROIE, WildReceipt, CORD — 3,712 documents), runs a controlled 5×2 experiment matrix (5 retrieval strategies × 2 metadata sources), and reports the results honestly, including the ones that didn't come out clean.
 
@@ -110,7 +113,7 @@ docker rm -f doc-rag-demo     # remove the container entirely
 
 **Relevant excerpts from documents you ask about — the sample receipts or anything you upload — are sent to Together.ai's hosted API to generate the answer.** This is true for both workflows. Don't upload or ask about anything you don't want leaving your machine. Generating answers through your own Together.ai API key uses your own prepaid balance and **may cost you real money** — this project measured roughly $0.0001–0.001 per question in its own testing (see `PROGRESS.md` for the exact measured figures and methodology), but costs can vary with question complexity and Together's current pricing; check your own balance and Together's current rates rather than relying on this estimate.
 
-## Quick-start prerequisites
+## Research reproduction prerequisites
 
 - **OS:** WSL2 or native Linux (developed and tested on WSL2/Ubuntu)
 - **Python:** 3.12
